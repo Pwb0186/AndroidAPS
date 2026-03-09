@@ -13,6 +13,8 @@ import app.aaps.core.data.pump.defs.TimeChangeType
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.protection.ProtectionCheck
+import app.aaps.core.interfaces.pump.BlePreCheck
 import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.interfaces.notifications.NotificationLevel
 import app.aaps.core.interfaces.notifications.NotificationManager
@@ -57,6 +59,7 @@ import app.aaps.pump.equil.manager.command.CmdBasalSet
 import app.aaps.pump.equil.manager.command.CmdSettingSet
 import app.aaps.pump.equil.manager.command.CmdTimeSet
 import app.aaps.pump.equil.manager.command.PumpEvent
+import app.aaps.pump.equil.ui.compose.EquilComposeContent
 import app.aaps.pump.equil.manager.customCommands.CmdModeAndHistoryGet
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.kotlin.plusAssign
@@ -87,11 +90,18 @@ class EquilPumpPlugin @Inject constructor(
     private val equilManager: EquilManager,
     private val pumpEnactResultProvider: Provider<PumpEnactResult>,
     private val constraintsChecker: ConstraintsChecker,
-    private val notificationManager: NotificationManager
+    private val notificationManager: NotificationManager,
+    private val protectionCheck: ProtectionCheck,
+    private val blePreCheck: BlePreCheck
 ) : PumpPluginBase(
     pluginDescription = PluginDescription()
         .mainType(PluginType.PUMP)
-        .fragmentClass(EquilFragment::class.java.name)
+        .composeContent { _ ->
+            EquilComposeContent(
+                protectionCheck = protectionCheck,
+                blePreCheck = blePreCheck
+            )
+        }
         .pluginIcon(app.aaps.core.ui.R.drawable.ic_equil_128)
         .pluginName(R.string.equil_name)
         .shortName(R.string.equil_name_short)
