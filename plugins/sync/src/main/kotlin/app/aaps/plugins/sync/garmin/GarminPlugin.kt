@@ -192,6 +192,9 @@ class GarminPlugin @Inject constructor(
         disposable.add(
             rxBus.toObservable(EventLoopUpdateGui::class.java).observeOn(Schedulers.io()).subscribe { sendPhoneAppMessageV2() }
         )
+        disposable.add(
+            rxBus.toObservable(app.aaps.core.interfaces.rx.events.EventTreatmentChange::class.java).observeOn(Schedulers.io()).subscribe { sendPhoneAppMessageV2() }
+        )
         setupHttpServer()
         if (garminAapsKey.isNotEmpty())
             setupGarminMessenger()
