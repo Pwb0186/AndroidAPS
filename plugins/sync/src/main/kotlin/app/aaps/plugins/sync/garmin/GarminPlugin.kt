@@ -14,9 +14,11 @@ import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
 import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.bus.RxBus
-import app.aaps.core.interfaces.rx.events.EventLoopUpdateGui
 import app.aaps.core.interfaces.rx.events.EventNewBG
 import app.aaps.core.interfaces.rx.events.EventPreferenceChange
+import app.aaps.core.interfaces.rx.events.EventTempBasalChange
+import app.aaps.core.interfaces.rx.events.EventTempTargetChange
+import app.aaps.core.interfaces.rx.events.EventTreatmentChange
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.validators.DefaultEditTextValidator
 import app.aaps.core.validators.preferences.AdaptiveIntPreference
@@ -189,11 +191,21 @@ class GarminPlugin @Inject constructor(
                 .observeOn(Schedulers.io())
                 .subscribe(::onNewBloodGlucose)
         )
+        // Precise, narrowly-scoped triggers instead of the broad EventLoopUpdateGui
+        // (which fires on any overview UI refresh, not specifically on new data):
+        // - EventNewBG's push now happens inside onNewBloodGlucose() itself, right
+        //   below, reusing the same dedup check it already does.
+        // - EventTreatmentChange: entered insulin/carbs/bolus wizard results.
+        // - EventTempTargetChange: a temporary target was set/cancelled.
+        // - EventTempBasalChange: the temp basal rate changed.
         disposable.add(
-            rxBus.toObservable(EventLoopUpdateGui::class.java).observeOn(Schedulers.io()).subscribe { sendPhoneAppMessageV2() }
+            rxBus.toObservable(EventTreatmentChange::class.java).observeOn(Schedulers.io()).subscribe { sendPhoneAppMessageV2() }
         )
         disposable.add(
-            rxBus.toObservable(app.aaps.core.interfaces.rx.events.EventTreatmentChange::class.java).observeOn(Schedulers.io()).subscribe { sendPhoneAppMessageV2() }
+            rxBus.toObservable(EventTempTargetChange::class.java).observeOn(Schedulers.io()).subscribe { sendPhoneAppMessageV2() }
+        )
+        disposable.add(
+            rxBus.toObservable(EventTempBasalChange::class.java).observeOn(Schedulers.io()).subscribe { sendPhoneAppMessageV2() }
         )
         setupHttpServer()
         if (garminAapsKey.isNotEmpty())
@@ -244,11 +256,17 @@ class GarminPlugin @Inject constructor(
     fun onNewBloodGlucose(event: EventNewBG) {
         val timestamp = event.glucoseValueTimestamp ?: return
         aapsLogger.info(LTag.GARMIN, "onNewBloodGlucose ${Date(timestamp)}")
+        var isNew = false
         valueLock.withLock {
             if ((lastGlucoseValueTimestamp ?: 0) >= timestamp) return
             lastGlucoseValueTimestamp = timestamp
+            isNew = true
             newValue.signalAll()
         }
+        // Push outside the lock - sendPhoneAppMessageV2() talks to the Connect IQ
+        // SDK, which shouldn't happen while holding valueLock (used elsewhere for
+        // the HTTP long-poll wait).
+        if (isNew) sendPhoneAppMessageV2()
     }
 
     @VisibleForTesting
