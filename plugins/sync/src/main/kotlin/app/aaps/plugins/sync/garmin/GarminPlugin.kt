@@ -325,10 +325,10 @@ class GarminPlugin @Inject constructor(
         return values
     }
 
-    /** Gets the last 3 hours of glucose values. */
+    /** Gets the last 2 hours of glucose values. */
     @VisibleForTesting
     fun getGlucoseValuesV2(): List<GV> {
-        val from = clock.instant().minus(Duration.ofHours(3))
+        val from = clock.instant().minus(Duration.ofHours(2))
         return loopHub.getGlucoseValues(from, true)
     }
 
@@ -363,10 +363,10 @@ class GarminPlugin @Inject constructor(
         return values
     }
 
-    /** Gets the last 3 hours of glucose values. */
+    /** Gets the last 2 hours of glucose values. */
     @VisibleForTesting
     fun getGlucoseValues(): List<GV> {
-        val from = clock.instant().minus(Duration.ofHours(3))
+        val from = clock.instant().minus(Duration.ofHours(2))
         return loopHub.getGlucoseValues(from, true)
     }
 
