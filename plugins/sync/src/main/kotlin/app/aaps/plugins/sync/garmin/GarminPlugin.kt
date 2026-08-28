@@ -310,7 +310,6 @@ class GarminPlugin @Inject constructor(
         val values = mutableMapOf<String, Any>(
             "key" to garminAapsKey,
             "command" to "glucose",
-            "profile" to loopHub.currentProfileName.first().toString(),
             "encodedGlucose" to encodedGlucose(getGlucoseValuesV2()),
             "remainingInsulin" to loopHub.insulinOnboard,
             "remainingBasalInsulin" to loopHub.insulinBasalOnboard,
@@ -349,7 +348,6 @@ class GarminPlugin @Inject constructor(
         val values = mutableMapOf<String, Any>(
             "key" to garminAapsKey,
             "command" to "glucose",
-            "profile" to loopHub.currentProfileName.first().toString(),
             "encodedGlucose" to encodedGlucose(getGlucoseValues()),
             "remainingInsulin" to loopHub.insulinOnboard,
             "remainingBasalInsulin" to loopHub.insulinBasalOnboard,
@@ -425,7 +423,6 @@ class GarminPlugin @Inject constructor(
     @VisibleForTesting
     fun onGetBloodGlucose(uri: URI): CharSequence {
         receiveHeartRate(uri)
-        val profileName = loopHub.currentProfileName
         val waitSec = getQueryParameter(uri, "wait", 0L)
         val glucoseValues = getGlucoseValues(Duration.ofSeconds(waitSec))
         val jo = JsonObject()
@@ -451,7 +448,6 @@ class GarminPlugin @Inject constructor(
             jo.addProperty("temporaryTargetEndSec", it.end / 1000)
             jo.addProperty("temporaryTargetDurationMin", it.duration / 60000)
         } ?: jo.addProperty("temporaryTargetActive", false)
-        jo.addProperty("profile", profileName.first().toString())
         jo.addProperty("connected", loopHub.isConnected)
         return jo.toString()
     }
