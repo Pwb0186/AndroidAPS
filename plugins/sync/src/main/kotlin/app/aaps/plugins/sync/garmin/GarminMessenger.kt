@@ -11,7 +11,24 @@ class GarminMessenger(
     applicationIdNames: Map<String, String>,
     private val messageCallback: (app: GarminApplication, msg: Any) -> Unit,
     enableConnectIq: Boolean,
-    enableSimulator: Boolean): Disposable, GarminReceiver {
+    enableSimulator: Boolean,
+    /**
+     * Called whenever this messenger's overall connection state to the phone's
+     * ConnectIQ service changes - true on onConnect, false on onDisconnect.
+     * Defaults to a no-op so existing call sites (e.g. the V1 messenger) don't
+     * need to change. Added so callers can know connection health in real
+     * time instead of guessing - see GarminPlugin's watchdog for why that
+     * matters.
+     */
+    private val connectionStateCallback: (connected: Boolean) -> Unit = {},
+    /**
+     * Called with the result of every sendMessage() attempt - true/null error
+     * on success, false/message on failure. Defaults to a no-op. Previously
+     * this result was only ever logged inside this class and never surfaced.
+     */
+    private val sendResultCallback: (deviceId: Long, appId: String, success: Boolean, errorMessage: String?) -> Unit =
+        { _, _, _, _ -> }
+): Disposable, GarminReceiver {
 
     private var disposed: Boolean = false
     /** All devices that where connected since this instance was created. */
@@ -47,6 +64,7 @@ class GarminMessenger(
     override fun onConnect(client: GarminClient) {
         aapsLogger.info(LTag.GARMIN, "onConnect $client")
         clients.add(client)
+        connectionStateCallback(true)
     }
 
     override fun onDisconnect(client: GarminClient) {
@@ -56,6 +74,7 @@ class GarminMessenger(
             val deviceIds = devices.filter { (_, d) -> d.client == client }.map { (id, _) -> id }
             deviceIds.forEach { id -> devices.remove(id) }
         }
+        connectionStateCallback(false)
         client.dispose()
         when (client) {
             is GarminDeviceClient -> startDeviceClient()
@@ -79,6 +98,7 @@ class GarminMessenger(
     override fun onSendMessage(client: GarminClient, deviceId: Long, appId: String, errorMessage: String?) {
         val app = getApplication(client, deviceId, appId)
         aapsLogger.info(LTag.GARMIN, "onSendMessage $app ${errorMessage ?: "OK"}")
+        sendResultCallback(deviceId, appId, errorMessage == null, errorMessage)
     }
 
     fun sendMessage(device: GarminDevice, msg: Any) {

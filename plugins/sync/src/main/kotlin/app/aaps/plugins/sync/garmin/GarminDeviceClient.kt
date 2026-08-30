@@ -44,6 +44,9 @@ class GarminDeviceClient(
         }
     }
     private var bindLock = Object()
+    /** Retry/backoff state for [bindService]. Both are only touched under [bindLock]. */
+    private var bindRetryAttempt = 0
+    private var bindAttemptId = 0
     private var ciqService: IConnectIQService? = null
         get() {
             synchronized(bindLock) {
@@ -95,6 +98,7 @@ class GarminDeviceClient(
                 notifyReceiver = state != State.RECONNECTING
                 state = State.CONNECTED
                 ciqService = ciq
+                bindRetryAttempt = 0
                 bindLock.notifyAll()
             }
             if (notifyReceiver) receiver.onConnect(this@GarminDeviceClient)
@@ -120,8 +124,77 @@ class GarminDeviceClient(
         bindService()
     }
 
+    /**
+     * Binds to the ConnectIQ service, and - unlike the original implementation -
+     * actually reacts if that fails, in either of the two ways it can fail
+     * silently:
+     *  1. `context.bindService(...)` returns `false` immediately (e.g. Garmin
+     *     Connect Mobile wasn't reachable at that exact moment) - its return
+     *     value was previously never checked, so this failure produced no log
+     *     line and no further attempt, ever.
+     *  2. `bindService(...)` returns `true` (the OS accepted the request) but
+     *     [ciqServiceConnection]'s `onServiceConnected` never actually fires -
+     *     e.g. Garmin Connect Mobile hangs mid-startup. Without a timeout,
+     *     [state] would stay `BINDING` forever with nothing left to retry it.
+     *
+     * This is a confirmed real-world failure mode: an exported AAPS log showed
+     * exactly case 1 - one silent, unretried bind attempt, followed by 90+
+     * minutes of complete silence until AAPS was manually force-restarted.
+     */
     private fun bindService() {
-        context.bindService(serviceIntent, Context.BIND_AUTO_CREATE, executor, ciqServiceConnection)
+        val myAttemptId: Int
+        synchronized(bindLock) {
+            myAttemptId = ++bindAttemptId
+        }
+        val started = try {
+            context.bindService(serviceIntent, Context.BIND_AUTO_CREATE, executor, ciqServiceConnection)
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.GARMIN, "bindService() threw", e)
+            false
+        }
+        if (!started) {
+            aapsLogger.warn(LTag.GARMIN, "bindService() returned false - will retry")
+            scheduleReconnect()
+            return
+        }
+        Schedulers.io().scheduleDirect({
+            synchronized(bindLock) {
+                // Only act if this specific attempt is still the current one and
+                // still hasn't connected - a newer attempt or a successful
+                // connect in the meantime makes this stale timeout a no-op.
+                if (bindAttemptId == myAttemptId && state != State.CONNECTED && state != State.DISPOSED) {
+                    aapsLogger.warn(LTag.GARMIN, "ConnectIQ bind timed out after ${BIND_CONNECT_TIMEOUT_SEC}s - will retry")
+                    try {
+                        context.unbindService(ciqServiceConnection)
+                    } catch (e: Exception) {
+                        // Expected if it was never actually bound - not worth logging as an error.
+                    }
+                    scheduleReconnect()
+                }
+            }
+        }, BIND_CONNECT_TIMEOUT_SEC, TimeUnit.SECONDS)
+    }
+
+    /** Schedules another [bindService] attempt with exponential backoff, capped at [BIND_RETRY_MAX_DELAY_SEC]. */
+    private fun scheduleReconnect() {
+        val delaySec: Long
+        synchronized(bindLock) {
+            if (state == State.DISPOSED) return
+            state = State.RECONNECTING
+            delaySec = minOf(
+                BIND_RETRY_BASE_DELAY_SEC * (1L shl minOf(bindRetryAttempt, 5)),
+                BIND_RETRY_MAX_DELAY_SEC
+            )
+            bindRetryAttempt++
+        }
+        aapsLogger.info(LTag.GARMIN, "retrying ConnectIQ bind in ${delaySec}s (attempt $bindRetryAttempt)")
+        Schedulers.io().scheduleDirect({
+            synchronized(bindLock) {
+                if (state == State.DISPOSED) return@scheduleDirect
+                state = State.BINDING
+            }
+            bindService()
+        }, delaySec, TimeUnit.SECONDS)
     }
 
     override val connectedDevices: List<GarminDevice>
@@ -295,5 +368,12 @@ class GarminDeviceClient(
         )
 
         const val MAX_RETRIES = 10
+
+        /** How long to wait for onServiceConnected before treating a bind attempt as failed. */
+        const val BIND_CONNECT_TIMEOUT_SEC = 15L
+
+        /** Backoff start/cap for [scheduleReconnect] - 10s, 20s, 40s, ... capped at 5 min. */
+        const val BIND_RETRY_BASE_DELAY_SEC = 10L
+        const val BIND_RETRY_MAX_DELAY_SEC = 300L
     }
 }

@@ -51,6 +51,20 @@ import javax.inject.Singleton
 import kotlin.concurrent.withLock
 import kotlin.math.roundToInt
 
+/**
+ * How often the V2 push connection is proactively rebuilt, regardless of
+ * whether it looks healthy - see [GarminPlugin.watchdogCheckV2] for why.
+ */
+/**
+ * Thresholds for GarminPlugin's V2 connection watchdog - see
+ * [GarminPlugin.watchdogCheckV2] for how they're used. The real fix for the
+ * observed failure lives in GarminDeviceClient.bindService()'s own
+ * retry/backoff; these are a last-resort safety net on top of that.
+ */
+private val WATCHDOG_STALE_MS = TimeUnit.MINUTES.toMillis(20)
+private val WATCHDOG_MIN_REBUILD_INTERVAL_MS = TimeUnit.MINUTES.toMillis(2)
+private const val WATCHDOG_MAX_CONSECUTIVE_FAILURES = 5
+
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
@@ -126,6 +140,77 @@ class GarminPlugin @Inject constructor(
         }
     }
 
+    /**
+     * Real-time V2 connection health, fed by [GarminMessenger]'s connection/send
+     * callbacks (see [createGarminMessengerV2]) instead of guessed on a timer.
+     * The actual fix for the observed failure (a silently-swallowed failed
+     * bind with zero retry) now lives in GarminDeviceClient.bindService()
+     * itself - this is a second, independent layer: if GarminDeviceClient's
+     * own retry logic somehow still leaves things unhealthy for too long
+     * (an unanticipated failure mode), this rebuilds the whole messenger as a
+     * last resort, and logs enough to tell the two apart afterwards.
+     */
+    @VisibleForTesting
+    var isConnectedV2: Boolean = false
+
+    @VisibleForTesting
+    var lastSendConfirmedAtV2: Long = 0
+
+    @VisibleForTesting
+    var consecutiveSendFailuresV2: Int = 0
+
+    @VisibleForTesting
+    var lastMessengerRebuildAtV2: Long = 0
+
+    private fun onV2ConnectionStateChanged(connected: Boolean) {
+        aapsLogger.info(LTag.GARMIN, "V2 messenger connection state: $connected")
+        isConnectedV2 = connected
+        if (connected) {
+            consecutiveSendFailuresV2 = 0
+            // Don't make a freshly-reconnected watch wait up to 5 minutes for
+            // the next natural trigger - it just missed however long it was
+            // disconnected, so give it current data right away.
+            sendPhoneAppMessageV2()
+        }
+    }
+
+    private fun onV2SendResult(success: Boolean, errorMessage: String?) {
+        if (success) {
+            lastSendConfirmedAtV2 = clock.millis()
+            consecutiveSendFailuresV2 = 0
+        } else {
+            consecutiveSendFailuresV2++
+            aapsLogger.warn(LTag.GARMIN, "V2 send failed ($consecutiveSendFailuresV2 in a row): $errorMessage")
+        }
+    }
+
+    /**
+     * Last-resort safety net - see class comment above. Rebuilds at most once
+     * per [WATCHDOG_MIN_REBUILD_INTERVAL_MS] even if every check keeps
+     * failing, so a persistently broken state doesn't turn into a tight
+     * rebuild loop.
+     */
+    private fun watchdogCheckV2() {
+        val now = clock.millis()
+        if (now - lastMessengerRebuildAtV2 < WATCHDOG_MIN_REBUILD_INTERVAL_MS) return
+
+        val neverConfirmed = lastSendConfirmedAtV2 == 0L && now - lastMessengerRebuildAtV2 > WATCHDOG_STALE_MS
+        val staleConfirmation = lastSendConfirmedAtV2 > 0 && now - lastSendConfirmedAtV2 > WATCHDOG_STALE_MS
+        val tooManyFailures = consecutiveSendFailuresV2 >= WATCHDOG_MAX_CONSECUTIVE_FAILURES
+
+        if (!isConnectedV2 || staleConfirmation || tooManyFailures || neverConfirmed) {
+            aapsLogger.warn(
+                LTag.GARMIN,
+                "V2 messenger watchdog: rebuilding (connected=$isConnectedV2, " +
+                    "failures=$consecutiveSendFailuresV2, " +
+                    "staleMin=${if (lastSendConfirmedAtV2 > 0) (now - lastSendConfirmedAtV2) / 60_000 else -1})"
+            )
+            resetGarminMessengerV2()
+            consecutiveSendFailuresV2 = 0
+            lastMessengerRebuildAtV2 = now
+        }
+    }
+
     @VisibleForTesting
     private val disposable = CompositeDisposable()
 
@@ -172,7 +257,9 @@ class GarminPlugin @Inject constructor(
         val enableDebug = false
         aapsLogger.info(LTag.GARMIN, "initialize V2 IQ messenger in debug=$enableDebug")
         return GarminMessenger(
-            aapsLogger, context, v2GlucoseAppIds, { _, _ -> }, true, enableDebug
+            aapsLogger, context, v2GlucoseAppIds, { _, _ -> }, true, enableDebug,
+            connectionStateCallback = ::onV2ConnectionStateChanged,
+            sendResultCallback = { _, _, success, errorMessage -> onV2SendResult(success, errorMessage) }
         ).also {
             disposable.add(it)
         }
@@ -181,6 +268,10 @@ class GarminPlugin @Inject constructor(
     override fun onStart() {
         super.onStart()
         aapsLogger.info(LTag.GARMIN, "start")
+        // Start the watchdog's clock fresh from app start, not from epoch 0 -
+        // otherwise the very first V2 send after a normal app start would
+        // trigger an immediate, unnecessary rebuild.
+        lastMessengerRebuildAtV2 = clock.millis()
         disposable.add(
             rxBus
                 .toObservable(EventPreferenceChange::class.java)
@@ -299,10 +390,12 @@ class GarminPlugin @Inject constructor(
     }
 
     private fun sendPhoneAppMessageV2(device: GarminDevice) {
+        watchdogCheckV2()
         garminMessengerV2.sendMessage(device, getGlucoseMessageV2())
     }
 
     private fun sendPhoneAppMessageV2() {
+        watchdogCheckV2()
         garminMessengerV2.sendMessage(getGlucoseMessageV2())
     }
 
