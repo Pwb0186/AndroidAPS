@@ -67,6 +67,9 @@ class GarminMessenger(
         connectionStateCallback(true)
     }
 
+    private var restartCount = 0
+    private var lastRestartMs = 0L
+
     override fun onDisconnect(client: GarminClient) {
         aapsLogger.info(LTag.GARMIN, "onDisconnect ${client.name}")
         clients.remove(client)
@@ -77,7 +80,19 @@ class GarminMessenger(
         connectionStateCallback(false)
         client.dispose()
         when (client) {
-            is GarminDeviceClient -> startDeviceClient()
+            is GarminDeviceClient -> {
+                val now = System.currentTimeMillis()
+                if (now - lastRestartMs > 60000) {
+                    restartCount = 0
+                }
+                restartCount++
+                lastRestartMs = now
+                if (restartCount > 10) {
+                    aapsLogger.warn(LTag.GARMIN, "Max restart count reached. Stopping automatic restarts.")
+                } else {
+                    io.reactivex.schedulers.Schedulers.io().scheduleDirect({ startDeviceClient() }, restartCount * 5L, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            }
             is GarminSimulatorClient -> GarminSimulatorClient(aapsLogger, this)
             else -> aapsLogger.warn(LTag.GARMIN, "onDisconnect unknown client $client")
         }
@@ -113,12 +128,12 @@ class GarminMessenger(
     }
 
     private fun sendMessage(app: GarminApplication, msg: Any) {
-        // Convert msg to string for logging.
+        // Convert msg to string for logging, excluding encodedGlucose to save log volume.
         val s = when (msg) {
             is Map<*,*> ->
-                msg.entries.joinToString(", ", "(", ")") { (k, v) -> "$k=$v" }
+                msg.filterKeys { it != "encodedGlucose" }.entries.joinToString(", ", "(", ")") { (k, v) -> "$k=$v" }
             is List<*> ->
-                msg.joinToString(", ", "(", ")")
+                "(List of ${msg.size} items)"
             else ->
                 msg.toString()
         }
