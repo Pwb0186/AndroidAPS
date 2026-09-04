@@ -402,7 +402,7 @@ class GarminPlugin @Inject constructor(
     private fun getGlucoseMessageV2(): Map<String, Any> {
         return mapOf(
             "key" to garminAapsKey,
-            "command" to "glucose"
+            "command" to "update"
         )
     }
 
