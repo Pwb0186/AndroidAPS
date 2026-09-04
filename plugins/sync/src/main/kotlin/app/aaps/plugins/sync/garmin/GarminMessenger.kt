@@ -90,7 +90,7 @@ class GarminMessenger(
                 if (restartCount > 10) {
                     aapsLogger.warn(LTag.GARMIN, "Max restart count reached. Stopping automatic restarts.")
                 } else {
-                    io.reactivex.schedulers.Schedulers.io().scheduleDirect({ startDeviceClient() }, restartCount * 5L, java.util.concurrent.TimeUnit.SECONDS)
+                    io.reactivex.rxjava3.schedulers.Schedulers.io().scheduleDirect({ startDeviceClient() }, restartCount * 5L, java.util.concurrent.TimeUnit.SECONDS)
                 }
             }
             is GarminSimulatorClient -> GarminSimulatorClient(aapsLogger, this)
