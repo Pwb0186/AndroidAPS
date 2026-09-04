@@ -108,6 +108,9 @@ class LoopHubImpl @Inject constructor(
             preferences.get(UnitDoubleKey.OverviewHighMark), glucoseUnit
         )
 
+    override val temporaryTarget
+        get() = persistenceLayer.getTemporaryTargetActiveAt(clock.millis())
+
     /** Tells the loop algorithm that the pump is physically connected. */
     override fun connectPump() {
         disposable += persistenceLayer.cancelCurrentRunningMode(clock.millis(), Action.RECONNECT, Sources.Garmin).subscribe()
