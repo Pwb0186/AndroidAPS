@@ -94,6 +94,9 @@ class GarminPlugin @Inject constructor(
     /** HTTP Server for local HTTP server communication (device app requests values) .*/
     private var server: HttpServer? = null
 
+    private var lastStepsTotal: Int = -1
+    private var lastStepsTime: Instant = Instant.EPOCH
+
     @VisibleForTesting
     var garminMessengerField: GarminMessenger? = null
     val garminMessenger: GarminMessenger
@@ -604,6 +607,42 @@ class GarminPlugin @Inject constructor(
         }
     }
 
+    @VisibleForTesting
+    fun receiveSteps(uri: URI) {
+        val totalSteps: Int = getQueryParameter(uri, "steps", -1L).toInt()
+        val device: String? = getQueryParameter(uri, "device")
+        val test: Boolean = getQueryParameter(uri, "test", false)
+        if (totalSteps >= 0) {
+            receiveSteps(totalSteps, device, test)
+        }
+    }
+
+    private fun receiveSteps(totalSteps: Int, device: String?, test: Boolean) {
+        val now = clock.instant()
+        if (lastStepsTotal >= 0 && totalSteps >= lastStepsTotal && lastStepsTime.isAfter(Instant.EPOCH)) {
+            val delta = totalSteps - lastStepsTotal
+            val duration = Duration.between(lastStepsTime, now)
+            
+            // Only save if it's been at least 1 minute, so we don't spam the DB with 0-second deltas
+            if (delta > 0 && duration.toMinutes() >= 1) {
+                aapsLogger.info(LTag.GARMIN, "steps delta $delta over ${duration.toMinutes()} minutes")
+                if (!test) {
+                    loopHub.storeSteps(lastStepsTime, now, delta, device)
+                }
+                lastStepsTotal = totalSteps
+                lastStepsTime = now
+            } else if (duration.toMinutes() >= 1) {
+                // Time passed but no new steps
+                lastStepsTotal = totalSteps
+                lastStepsTime = now
+            }
+        } else {
+            // First time, or watch reset its daily counter
+            lastStepsTotal = totalSteps
+            lastStepsTime = now
+        }
+    }
+
     /** Handles carb notification from the device. */
     @VisibleForTesting
     fun onPostCarbs(uri: URI): CharSequence {
@@ -640,6 +679,7 @@ class GarminPlugin @Inject constructor(
     @VisibleForTesting
     fun onSgv(uri: URI): CharSequence {
         receiveHeartRate(uri)
+        receiveSteps(uri)
         val count = getQueryParameter(uri, "count", 24L)
             .toInt().coerceAtMost(1000).coerceAtLeast(1)
         val briefMode = getQueryParameter(uri, "brief_mode", false)

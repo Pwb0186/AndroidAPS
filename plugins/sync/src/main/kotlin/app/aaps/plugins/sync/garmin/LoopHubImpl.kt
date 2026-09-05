@@ -171,4 +171,23 @@ class LoopHubImpl @Inject constructor(
         )
         disposable += persistenceLayer.insertOrUpdateHeartRate(hr).subscribe()
     }
+
+    override fun storeSteps(
+        samplingStart: Instant, samplingEnd: Instant,
+        steps: Int,
+        device: String?
+    ) {
+        val sc = app.aaps.core.data.model.SC(
+            timestamp = samplingEnd.toEpochMilli(),
+            duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
+            steps5min = steps,
+            steps10min = 0,
+            steps15min = 0,
+            steps30min = 0,
+            steps60min = 0,
+            steps180min = 0,
+            device = device ?: "Garmin"
+        )
+        disposable += persistenceLayer.insertOrUpdateStepsCount(sc).subscribe()
+    }
 }

@@ -64,4 +64,11 @@ interface LoopHub {
         avgHeartRate: Int,
         device: String?
     )
+
+    /** Stores step counts over a given interval. */
+    fun storeSteps(
+        samplingStart: Instant, samplingEnd: Instant,
+        steps: Int,
+        device: String?
+    )
 }
