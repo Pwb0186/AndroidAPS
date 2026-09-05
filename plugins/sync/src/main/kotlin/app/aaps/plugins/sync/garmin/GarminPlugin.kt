@@ -508,6 +508,7 @@ class GarminPlugin @Inject constructor(
     @VisibleForTesting
     fun onGetBloodGlucose(uri: URI): CharSequence {
         receiveHeartRate(uri)
+        receiveSteps(uri)
         val waitSec = getQueryParameter(uri, "wait", 0L)
         val glucoseValues = getGlucoseValues(Duration.ofSeconds(waitSec))
         val jo = JsonObject()
