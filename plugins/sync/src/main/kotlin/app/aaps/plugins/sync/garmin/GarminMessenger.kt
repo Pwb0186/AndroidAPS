@@ -4,6 +4,7 @@ import android.content.Context
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import io.reactivex.rxjava3.disposables.Disposable
+import java.util.concurrent.CopyOnWriteArrayList
 
 class GarminMessenger(
     private val aapsLogger: AAPSLogger,
@@ -11,12 +12,32 @@ class GarminMessenger(
     applicationIdNames: Map<String, String>,
     private val messageCallback: (app: GarminApplication, msg: Any) -> Unit,
     enableConnectIq: Boolean,
-    enableSimulator: Boolean): Disposable, GarminReceiver {
+    enableSimulator: Boolean,
+    /**
+     * Called whenever this messenger's overall connection state to the phone's
+     * ConnectIQ service changes - true on onConnect, false on onDisconnect.
+     * Defaults to a no-op so existing call sites (e.g. the V1 messenger) don't
+     * need to change. Added so callers can know connection health in real
+     * time instead of guessing - see GarminPlugin's watchdog for why that
+     * matters.
+     */
+    private val connectionStateCallback: (connected: Boolean) -> Unit = {},
+    /**
+     * Called with the result of every sendMessage() attempt - true/null error
+     * on success, false/message on failure. Defaults to a no-op. Previously
+     * this result was only ever logged inside this class and never surfaced.
+     */
+    private val sendResultCallback: (deviceId: Long, appId: String, success: Boolean, errorMessage: String?) -> Unit =
+        { _, _, _, _ -> }
+): Disposable, GarminReceiver {
 
-    private var disposed: Boolean = false
+    @Volatile private var disposed: Boolean = false
     /** All devices that where connected since this instance was created. */
     private val devices = mutableMapOf<Long, GarminDevice>()
-    private val clients = mutableListOf<GarminClient>()
+    // CopyOnWriteArrayList ensures thread safety: onConnect/onDisconnect write
+    // from the ConnectIQ callback thread while sendMessage() iterates from the
+    // RxJava IO thread. mutableListOf() was not safe for concurrent access.
+    private val clients = CopyOnWriteArrayList<GarminClient>()
     private val appIdNames = mutableMapOf<String, String>()
     init {
         aapsLogger.info(LTag.GARMIN, "init CIQ debug=$enableSimulator")
@@ -46,8 +67,17 @@ class GarminMessenger(
 
     override fun onConnect(client: GarminClient) {
         aapsLogger.info(LTag.GARMIN, "onConnect $client")
-        clients.add(client)
+        // Guard against duplicate entries: onServiceConnected can fire more than
+        // once if the getter's reconnect branch triggers a re-bind (K4 fix).
+        val isNew = client !in clients
+        if (isNew) {
+            clients.add(client)
+            connectionStateCallback(true)
+        }
     }
+
+    private var restartCount = 0
+    private var lastRestartMs = 0L
 
     override fun onDisconnect(client: GarminClient) {
         aapsLogger.info(LTag.GARMIN, "onDisconnect ${client.name}")
@@ -56,9 +86,34 @@ class GarminMessenger(
             val deviceIds = devices.filter { (_, d) -> d.client == client }.map { (id, _) -> id }
             deviceIds.forEach { id -> devices.remove(id) }
         }
+        connectionStateCallback(false)
         client.dispose()
         when (client) {
-            is GarminDeviceClient -> startDeviceClient()
+            is GarminDeviceClient -> {
+                val now = System.currentTimeMillis()
+                if (now - lastRestartMs > 60000) {
+                    restartCount = 0
+                }
+                restartCount++
+                lastRestartMs = now
+                if (restartCount > 10) {
+                    // Too many rapid restarts within 60s - cool down for 5 minutes
+                    // then reset the counter and try again. Permanent stop is avoided
+                    // because V2 push is the primary data path and should recover
+                    // without requiring a full plugin restart.
+                    aapsLogger.warn(LTag.GARMIN, "Max rapid restart count reached. Cooling down for 5 minutes before retrying.")
+                    io.reactivex.rxjava3.schedulers.Schedulers.io().scheduleDirect({
+                        if (!disposed) {
+                            restartCount = 0
+                            startDeviceClient()
+                        }
+                    }, 5L, java.util.concurrent.TimeUnit.MINUTES)
+                } else {
+                    io.reactivex.rxjava3.schedulers.Schedulers.io().scheduleDirect({
+                        if (!disposed) startDeviceClient()
+                    }, restartCount * 5L, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            }
             is GarminSimulatorClient -> GarminSimulatorClient(aapsLogger, this)
             else -> aapsLogger.warn(LTag.GARMIN, "onDisconnect unknown client $client")
         }
@@ -79,6 +134,7 @@ class GarminMessenger(
     override fun onSendMessage(client: GarminClient, deviceId: Long, appId: String, errorMessage: String?) {
         val app = getApplication(client, deviceId, appId)
         aapsLogger.info(LTag.GARMIN, "onSendMessage $app ${errorMessage ?: "OK"}")
+        sendResultCallback(deviceId, appId, errorMessage == null, errorMessage)
     }
 
     fun sendMessage(device: GarminDevice, msg: Any) {
@@ -93,12 +149,12 @@ class GarminMessenger(
     }
 
     private fun sendMessage(app: GarminApplication, msg: Any) {
-        // Convert msg to string for logging.
+        // Convert msg to string for logging, excluding encodedGlucose to save log volume.
         val s = when (msg) {
             is Map<*,*> ->
-                msg.entries.joinToString(", ", "(", ")") { (k, v) -> "$k=$v" }
+                msg.filterKeys { it != "encodedGlucose" }.entries.joinToString(", ", "(", ")") { (k, v) -> "$k=$v" }
             is List<*> ->
-                msg.joinToString(", ", "(", ")")
+                "(List of ${msg.size} items)"
             else ->
                 msg.toString()
         }

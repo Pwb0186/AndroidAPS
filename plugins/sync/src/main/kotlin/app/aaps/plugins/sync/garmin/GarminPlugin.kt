@@ -16,6 +16,9 @@ import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventNewBG
 import app.aaps.core.interfaces.rx.events.EventPreferenceChange
+import app.aaps.core.interfaces.rx.events.EventTempBasalChange
+import app.aaps.core.interfaces.rx.events.EventTempTargetChange
+import app.aaps.core.interfaces.rx.events.EventTreatmentChange
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.validators.DefaultEditTextValidator
 import app.aaps.core.validators.preferences.AdaptiveIntPreference
@@ -27,6 +30,7 @@ import app.aaps.plugins.sync.garmin.keys.GarminIntKey
 import app.aaps.plugins.sync.garmin.keys.GarminStringKey
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.schedulers.Schedulers
 import java.math.BigDecimal
@@ -39,12 +43,26 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.Date
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.Condition
 import java.util.concurrent.locks.ReentrantLock
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.concurrent.withLock
 import kotlin.math.roundToInt
+
+/**
+ * Thresholds for GarminPlugin's V2 connection watchdog - see
+ * [GarminPlugin.watchdogCheckV2] for how they're used. The real fix for the
+ * observed failure lives in GarminDeviceClient.bindService()'s own
+ * retry/backoff; these are a last-resort safety net on top of that.
+ */
+private val WATCHDOG_STALE_MS = TimeUnit.MINUTES.toMillis(20)
+private val WATCHDOG_MIN_REBUILD_INTERVAL_MS = TimeUnit.MINUTES.toMillis(2)
+private const val WATCHDOG_MAX_CONSECUTIVE_FAILURES = 5
 
 /** Support communication with Garmin devices.
  *
@@ -86,7 +104,7 @@ class GarminPlugin @Inject constructor(
 
     private fun resetGarminMessenger() {
         synchronized(this) {
-            garminMessengerField?.dispose()
+            garminMessengerField?.let { disposable.remove(it) }
             garminMessengerField = null
         }
     }
@@ -100,6 +118,108 @@ class GarminPlugin @Inject constructor(
         "815C7328C21248C493AD9AC4682FE6B3" to "GlucoseDataField",
         "4BDDCC1740084A1FAB83A3B2E2FCF55B" to "GlucoseWidget",
     )
+
+    private val v2GlucoseAppIds = mapOf(
+        "A0B1C2D3E4F54A6B8C7D9E0F1A2B3C4D" to "GlucoseWatch_V2"
+    )
+
+    @VisibleForTesting
+    var garminMessengerV2Field: GarminMessenger? = null
+    val garminMessengerV2: GarminMessenger
+        get() {
+            return synchronized(this) {
+                garminMessengerV2Field ?: createGarminMessengerV2().also { garminMessengerV2Field = it }
+            }
+        }
+
+    private fun resetGarminMessengerV2() {
+        synchronized(this) {
+            garminMessengerV2Field?.let { disposable.remove(it) }
+            garminMessengerV2Field = null
+        }
+    }
+
+    /**
+     * Real-time V2 connection health, fed by [GarminMessenger]'s connection/send
+     * callbacks (see [createGarminMessengerV2]) instead of guessed on a timer.
+     * The actual fix for the observed failure (a silently-swallowed failed
+     * bind with zero retry) now lives in GarminDeviceClient.bindService()
+     * itself - this is a second, independent layer: if GarminDeviceClient's
+     * own retry logic somehow still leaves things unhealthy for too long
+     * (an unanticipated failure mode), this rebuilds the whole messenger as a
+     * last resort, and logs enough to tell the two apart afterwards.
+     *
+     * All four fields are Atomic: written from ConnectIQ callback threads,
+     * read/reset from the RxJava IO scheduler thread. Long is not guaranteed
+     * atomic on all JVMs; AtomicLong/AtomicInteger/AtomicBoolean close that gap.
+     */
+    @VisibleForTesting
+    val isConnectedV2 = AtomicBoolean(false)
+
+    @VisibleForTesting
+    val lastSendConfirmedAtV2 = AtomicLong(0)
+
+    @VisibleForTesting
+    val consecutiveSendFailuresV2 = AtomicInteger(0)
+
+    @VisibleForTesting
+    val lastMessengerRebuildAtV2 = AtomicLong(0)
+
+    private fun onV2ConnectionStateChanged(connected: Boolean) {
+        aapsLogger.info(LTag.GARMIN, "V2 messenger connection state: $connected")
+        isConnectedV2.set(connected)
+        if (connected) {
+            consecutiveSendFailuresV2.set(0)
+            // Don't make a freshly-reconnected watch wait up to 5 minutes for
+            // the next natural trigger - it just missed however long it was
+            // disconnected, so give it current data right away.
+            if (garminAapsKey.isNotEmpty()) sendPhoneAppMessageV2()
+        }
+    }
+
+    private fun onV2SendResult(success: Boolean, errorMessage: String?) {
+        if (success) {
+            lastSendConfirmedAtV2.set(clock.millis())
+            consecutiveSendFailuresV2.set(0)
+        } else {
+            val failures = consecutiveSendFailuresV2.incrementAndGet()
+            aapsLogger.warn(LTag.GARMIN, "V2 send failed ($failures in a row): $errorMessage")
+        }
+    }
+
+    /**
+     * Last-resort safety net - see class comment above. Rebuilds at most once
+     * per [WATCHDOG_MIN_REBUILD_INTERVAL_MS] even if every check keeps
+     * failing, so a persistently broken state doesn't turn into a tight
+     * rebuild loop.
+     *
+     * Returns true if a rebuild was triggered. Callers that would send
+     * immediately after must skip the send: the new messenger isn't connected
+     * yet, and [onV2ConnectionStateChanged] will fire the first send once it is.
+     */
+    private fun watchdogCheckV2(): Boolean {
+        val now = clock.millis()
+        if (now - lastMessengerRebuildAtV2.get() < WATCHDOG_MIN_REBUILD_INTERVAL_MS) return false
+
+        val neverConfirmed = lastSendConfirmedAtV2.get() == 0L && now - lastMessengerRebuildAtV2.get() > WATCHDOG_STALE_MS
+        val staleConfirmation = lastSendConfirmedAtV2.get() > 0 && now - lastSendConfirmedAtV2.get() > WATCHDOG_STALE_MS
+        val tooManyFailures = consecutiveSendFailuresV2.get() >= WATCHDOG_MAX_CONSECUTIVE_FAILURES
+
+        if (!isConnectedV2.get() || staleConfirmation || tooManyFailures || neverConfirmed) {
+            aapsLogger.warn(
+                LTag.GARMIN,
+                "V2 messenger watchdog: rebuilding (connected=${isConnectedV2.get()}, " +
+                    "failures=${consecutiveSendFailuresV2.get()}, " +
+                    "staleMin=${if (lastSendConfirmedAtV2.get() > 0) (now - lastSendConfirmedAtV2.get()) / 60_000 else -1})"
+            )
+            resetGarminMessengerV2()
+            garminMessengerV2Field = createGarminMessengerV2()
+            consecutiveSendFailuresV2.set(0)
+            lastMessengerRebuildAtV2.set(now)
+            return true
+        }
+        return false
+    }
 
     @VisibleForTesting
     private val disposable = CompositeDisposable()
@@ -117,15 +237,22 @@ class GarminPlugin @Inject constructor(
 
     private fun onPreferenceChange(event: EventPreferenceChange) {
         when (event.changedKey) {
-            "communication_ciq_debug_mode"                                       -> setupGarminMessenger()
             GarminBooleanKey.LocalHttpServer.key, GarminIntKey.LocalHttpPort.key -> setupHttpServer()
-            GarminStringKey.RequestKey.key                                       -> sendPhoneAppMessage()
+            GarminStringKey.RequestKey.key                                       -> {
+                sendPhoneAppMessage()
+                if (garminAapsKey.isNotEmpty()) sendPhoneAppMessageV2()
+            }
         }
     }
 
     private fun setupGarminMessenger() {
         resetGarminMessenger()
-        createGarminMessenger()
+        // Assign the return value - previously it was discarded, leaving
+        // garminMessengerField=null so the next getter call created yet another
+        // orphaned instance with duplicate broadcast actions (K1 fix).
+        garminMessengerField = createGarminMessenger()
+        resetGarminMessengerV2()
+        garminMessengerV2Field = createGarminMessengerV2()
     }
 
     private fun createGarminMessenger(): GarminMessenger {
@@ -138,9 +265,25 @@ class GarminPlugin @Inject constructor(
         }
     }
 
+    private fun createGarminMessengerV2(): GarminMessenger {
+        val enableDebug = false
+        aapsLogger.info(LTag.GARMIN, "initialize V2 IQ messenger in debug=$enableDebug")
+        return GarminMessenger(
+            aapsLogger, context, v2GlucoseAppIds, { _, _ -> }, true, enableDebug,
+            connectionStateCallback = ::onV2ConnectionStateChanged,
+            sendResultCallback = { _, _, success, errorMessage -> onV2SendResult(success, errorMessage) }
+        ).also {
+            disposable.add(it)
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         aapsLogger.info(LTag.GARMIN, "start")
+        // Start the watchdog's clock fresh from app start, not from epoch 0 -
+        // otherwise the very first V2 send after a normal app start would
+        // trigger an immediate, unnecessary rebuild.
+        lastMessengerRebuildAtV2.set(clock.millis())
         disposable.add(
             rxBus
                 .toObservable(EventPreferenceChange::class.java)
@@ -152,6 +295,32 @@ class GarminPlugin @Inject constructor(
                 .toObservable(EventNewBG::class.java)
                 .observeOn(Schedulers.io())
                 .subscribe(::onNewBloodGlucose)
+        )
+        // Precise, narrowly-scoped triggers instead of the broad EventLoopUpdateGui
+        // (which fires on any overview UI refresh, not specifically on new data):
+        // - EventNewBG's push happens inside onNewBloodGlucose() itself (below),
+        //   reusing the same dedup check it already does - kept separate since it
+        //   also needs to update lastGlucoseValueTimestamp/signal the HTTP long-poll,
+        //   not just trigger a send.
+        // - EventTreatmentChange: entered insulin/carbs/bolus wizard results.
+        // - EventTempTargetChange: a temporary target was set/cancelled.
+        // - EventTempBasalChange: the temp basal rate changed.
+        // These three are merged and debounced: a single loop cycle can easily
+        // fire more than one of them within milliseconds of each other (e.g. an
+        // SMB both logs a treatment and adjusts the temp basal), which would
+        // otherwise trigger several near-identical sendPhoneAppMessageV2() calls
+        // in a row for no benefit.
+        disposable.add(
+            Observable.merge(
+                listOf(
+                    rxBus.toObservable(EventTreatmentChange::class.java),
+                    rxBus.toObservable(EventTempTargetChange::class.java),
+                    rxBus.toObservable(EventTempBasalChange::class.java)
+                )
+            )
+                .debounce(2, TimeUnit.SECONDS)
+                .observeOn(Schedulers.io())
+                .subscribe { if (garminAapsKey.isNotEmpty()) sendPhoneAppMessageV2() }
         )
         setupHttpServer()
         if (garminAapsKey.isNotEmpty())
@@ -186,6 +355,8 @@ class GarminPlugin @Inject constructor(
     public override fun onStop() {
         disposable.clear()
         aapsLogger.info(LTag.GARMIN, "Stop")
+        resetGarminMessenger()
+        resetGarminMessengerV2()
         server?.close()
         server = null
         super.onStop()
@@ -200,11 +371,18 @@ class GarminPlugin @Inject constructor(
     fun onNewBloodGlucose(event: EventNewBG) {
         val timestamp = event.glucoseValueTimestamp ?: return
         aapsLogger.info(LTag.GARMIN, "onNewBloodGlucose ${Date(timestamp)}")
+        var isNew = false
         valueLock.withLock {
             if ((lastGlucoseValueTimestamp ?: 0) >= timestamp) return
             lastGlucoseValueTimestamp = timestamp
+            isNew = true
             newValue.signalAll()
         }
+        // Push outside the lock - sendPhoneAppMessageV2() talks to the Connect IQ
+        // SDK, which shouldn't happen while holding valueLock (used elsewhere for
+        // the HTTP long-poll wait).
+        // S7: Guard with key check - consistent with onConnectDevice() and onStart().
+        if (isNew && garminAapsKey.isNotEmpty()) sendPhoneAppMessageV2()
     }
 
     @VisibleForTesting
@@ -212,6 +390,7 @@ class GarminPlugin @Inject constructor(
         if (garminAapsKey.isNotEmpty()) {
             aapsLogger.info(LTag.GARMIN, "onConnectDevice $device sending glucose")
             sendPhoneAppMessage(device)
+            sendPhoneAppMessageV2(device)
         }
     }
 
@@ -223,20 +402,66 @@ class GarminPlugin @Inject constructor(
         garminMessenger.sendMessage(getGlucoseMessage())
     }
 
+    private fun sendPhoneAppMessageV2(device: GarminDevice) {
+        // K2: If watchdog just rebuilt the messenger, skip the immediate send.
+        // The new messenger isn't connected yet; onV2ConnectionStateChanged(true)
+        // will fire sendPhoneAppMessageV2() once it is.
+        if (watchdogCheckV2()) return
+        garminMessengerV2.sendMessage(device, getGlucoseMessageV2())
+    }
+
+    private fun sendPhoneAppMessageV2() {
+        // K2: Same race guard as the device-specific overload above.
+        if (watchdogCheckV2()) return
+        garminMessengerV2.sendMessage(getGlucoseMessageV2())
+    }
+
+    /**
+     * V2 wake-up signal: intentionally minimal - just the key and "updateWatch" command.
+     * The watch ignores the payload and immediately does an HTTP GET (/get) to fetch
+     * the full glucose dataset itself, eliminating the 30-second long-poll connection
+     * used by the old V1 pull model. Full data is never sent via CIQ in V2.
+     */
+    private fun getGlucoseMessageV2(): Map<String, Any> {
+        return mapOf(
+            "key" to garminAapsKey,
+            "command" to "updateWatch"
+        )
+    }
+
+    private fun addTemporaryTarget(values: MutableMap<String, Any>) {
+        val temporaryTarget = loopHub.temporaryTarget
+        values["temporaryTargetActive"] = temporaryTarget != null
+        temporaryTarget?.let {
+            values["temporaryTargetLow"] = it.lowTarget.roundToInt()
+            values["temporaryTargetHigh"] = it.highTarget.roundToInt()
+            values["temporaryTargetReason"] = it.reason.text
+            values["temporaryTargetEndSec"] = it.end / 1000
+            values["temporaryTargetDurationMin"] = it.duration / 60000
+        }
+    }
+
     @VisibleForTesting
-    fun getGlucoseMessage() = mapOf<String, Any>(
-        "key" to garminAapsKey,
-        "command" to "glucose",
-        "profile" to loopHub.currentProfileName.first().toString(),
-        "encodedGlucose" to encodedGlucose(getGlucoseValues()),
-        "remainingInsulin" to loopHub.insulinOnboard,
-        "remainingBasalInsulin" to loopHub.insulinBasalOnboard,
-        "glucoseUnit" to glucoseUnitStr,
-        "temporaryBasalRate" to
-            (loopHub.temporaryBasal.takeIf(java.lang.Double::isFinite) ?: 1.0),
-        "connected" to loopHub.isConnected,
-        "timestamp" to clock.instant().epochSecond
-    )
+    fun getGlucoseMessage(): Map<String, Any> {
+        val values = mutableMapOf<String, Any>(
+            "key" to garminAapsKey,
+            "command" to "glucose",
+            "encodedGlucose" to encodedGlucose(getGlucoseValues()),
+            "remainingInsulin" to loopHub.insulinOnboard,
+            "remainingBasalInsulin" to loopHub.insulinBasalOnboard,
+            "glucoseUnit" to glucoseUnitStr,
+            "temporaryBasalRate" to
+                (loopHub.temporaryBasal.takeIf { it.isFinite() } ?: 1.0),
+            "connected" to loopHub.isConnected,
+            "timestamp" to clock.instant().epochSecond,
+            // Re-added for backward compatibility: old watch faces and data fields
+            // that receive V1 CIQ pushes may read this field.
+            // Only the first letter of the profile name is sent (matches original AAPS).
+            "profile" to (loopHub.currentProfileName.firstOrNull()?.toString() ?: "")
+        )
+        addTemporaryTarget(values)
+        return values
+    }
 
     /** Gets the last 2+ hours of glucose values. */
     @VisibleForTesting
@@ -248,20 +473,20 @@ class GarminPlugin @Inject constructor(
     /** Get the last 2+ hours of glucose values and waits in case a new value should arrive soon. */
     private fun getGlucoseValues(maxWait: Duration): List<GV> {
         val glucoseFrequency = Duration.ofMinutes(5)
-        val glucoseValues = getGlucoseValues()
-        val last = glucoseValues.lastOrNull() ?: return emptyList()
-        val delay = Duration.ofMillis(clock.millis() - last.timestamp)
-        return if (!maxWait.isZero
-            && delay > glucoseFrequency
-            && delay < glucoseFrequency.plusMinutes(1)
-        ) {
-            valueLock.withLock {
+        return valueLock.withLock {
+            val glucoseValues = getGlucoseValues()
+            val last = glucoseValues.lastOrNull() ?: return@withLock emptyList()
+            val delay = Duration.ofMillis(clock.millis() - last.timestamp)
+            if (!maxWait.isZero
+                && delay > glucoseFrequency
+                && delay < glucoseFrequency.plusMinutes(1)
+            ) {
                 aapsLogger.debug(LTag.GARMIN, "waiting for new glucose (delay=$delay)")
                 newValue.awaitNanos(maxWait.toNanos())
+                getGlucoseValues()
+            } else {
+                glucoseValues
             }
-            getGlucoseValues()
-        } else {
-            glucoseValues
         }
     }
 
@@ -282,6 +507,7 @@ class GarminPlugin @Inject constructor(
         if (key.isNotEmpty() && key != deviceKey) {
             aapsLogger.warn(LTag.GARMIN, "Invalid AAPS Key from $caller, got '$deviceKey' want '$key' $uri")
             sendPhoneAppMessage()
+            sendPhoneAppMessageV2()
             Thread.sleep(1000L)
             HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
         } else {
@@ -299,13 +525,13 @@ class GarminPlugin @Inject constructor(
     @VisibleForTesting
     fun onGetBloodGlucose(uri: URI): CharSequence {
         receiveHeartRate(uri)
-        val profileName = loopHub.currentProfileName
         val waitSec = getQueryParameter(uri, "wait", 0L)
         val glucoseValues = getGlucoseValues(Duration.ofSeconds(waitSec))
         val jo = JsonObject()
         jo.addProperty("encodedGlucose", encodedGlucose(glucoseValues))
         jo.addProperty("remainingInsulin", loopHub.insulinOnboard)
         jo.addProperty("remainingBasalInsulin", loopHub.insulinBasalOnboard)
+        jo.addProperty("carbsOnBoard", loopHub.carbsOnboard ?: 0.0)
         loopHub.lowGlucoseMark.takeIf { it > 0.0 }?.let {
             jo.addProperty("lowGlucoseMark", it.roundToInt())
         }
@@ -316,8 +542,19 @@ class GarminPlugin @Inject constructor(
         loopHub.temporaryBasal.also {
             if (!it.isNaN()) jo.addProperty("temporaryBasalRate", it)
         }
-        jo.addProperty("profile", profileName.first().toString())
+        loopHub.temporaryTarget?.let {
+            jo.addProperty("temporaryTargetActive", true)
+            jo.addProperty("temporaryTargetLow", it.lowTarget.roundToInt())
+            jo.addProperty("temporaryTargetHigh", it.highTarget.roundToInt())
+            jo.addProperty("temporaryTargetReason", it.reason.text)
+            jo.addProperty("temporaryTargetEndSec", it.end / 1000)
+            jo.addProperty("temporaryTargetDurationMin", it.duration / 60000)
+        } ?: jo.addProperty("temporaryTargetActive", false)
         jo.addProperty("connected", loopHub.isConnected)
+        jo.addProperty("timestamp", clock.instant().epochSecond)
+        // Re-added for backward compatibility: old watch faces using HTTP pull may read this field.
+        // Only the first letter of the profile name is sent (matches original AAPS).
+        jo.addProperty("profile", loopHub.currentProfileName.firstOrNull()?.toString() ?: "")
         return jo.toString()
     }
 
@@ -469,7 +706,7 @@ class GarminPlugin @Inject constructor(
                         jo.addProperty("tbr", temporaryBasalRateInPercent)
                     }
                 }
-                jo.addProperty("cob", loopHub.carbsOnboard)
+                jo.addProperty("cob", loopHub.carbsOnboard ?: 0.0)
             }
             joa.add(jo)
         }
