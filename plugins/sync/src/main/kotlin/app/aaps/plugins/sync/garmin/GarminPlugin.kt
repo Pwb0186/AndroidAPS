@@ -173,7 +173,7 @@ class GarminPlugin @Inject constructor(
             // Don't make a freshly-reconnected watch wait up to 5 minutes for
             // the next natural trigger - it just missed however long it was
             // disconnected, so give it current data right away.
-            if (garminAapsKey.isNotEmpty()) sendPhoneAppMessageV2()
+            sendPhoneAppMessageV2()
         }
     }
 
@@ -240,7 +240,7 @@ class GarminPlugin @Inject constructor(
             GarminBooleanKey.LocalHttpServer.key, GarminIntKey.LocalHttpPort.key -> setupHttpServer()
             GarminStringKey.RequestKey.key                                       -> {
                 sendPhoneAppMessage()
-                if (garminAapsKey.isNotEmpty()) sendPhoneAppMessageV2()
+                sendPhoneAppMessageV2()
             }
         }
     }
@@ -320,11 +320,10 @@ class GarminPlugin @Inject constructor(
             )
                 .debounce(2, TimeUnit.SECONDS)
                 .observeOn(Schedulers.io())
-                .subscribe { if (garminAapsKey.isNotEmpty()) sendPhoneAppMessageV2() }
+                .subscribe { sendPhoneAppMessageV2() }
         )
         setupHttpServer()
-        if (garminAapsKey.isNotEmpty())
-            setupGarminMessenger()
+        setupGarminMessenger()
     }
 
     private fun setupHttpServer() {
@@ -381,17 +380,14 @@ class GarminPlugin @Inject constructor(
         // Push outside the lock - sendPhoneAppMessageV2() talks to the Connect IQ
         // SDK, which shouldn't happen while holding valueLock (used elsewhere for
         // the HTTP long-poll wait).
-        // S7: Guard with key check - consistent with onConnectDevice() and onStart().
-        if (isNew && garminAapsKey.isNotEmpty()) sendPhoneAppMessageV2()
+        if (isNew) sendPhoneAppMessageV2()
     }
 
     @VisibleForTesting
     fun onConnectDevice(device: GarminDevice) {
-        if (garminAapsKey.isNotEmpty()) {
-            aapsLogger.info(LTag.GARMIN, "onConnectDevice $device sending glucose")
-            sendPhoneAppMessage(device)
-            sendPhoneAppMessageV2(device)
-        }
+        aapsLogger.info(LTag.GARMIN, "onConnectDevice $device sending glucose")
+        sendPhoneAppMessage(device)
+        sendPhoneAppMessageV2(device)
     }
 
     private fun sendPhoneAppMessage(device: GarminDevice) {
@@ -506,8 +502,6 @@ class GarminPlugin @Inject constructor(
         val deviceKey = getQueryParameter(uri, "key")
         if (key.isNotEmpty() && key != deviceKey) {
             aapsLogger.warn(LTag.GARMIN, "Invalid AAPS Key from $caller, got '$deviceKey' want '$key' $uri")
-            sendPhoneAppMessage()
-            sendPhoneAppMessageV2()
             Thread.sleep(1000L)
             HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
         } else {
