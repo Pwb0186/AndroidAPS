@@ -124,10 +124,19 @@ class GarminDeviceClient(
                 ciqService = null
                 if (state != State.DISPOSED) state = State.DISCONNECTED
             }
-            broadcastReceiver.forEach { br -> context.unregisterReceiver(br) }
+            broadcastReceiver.forEach { br ->
+                try {
+                    context.unregisterReceiver(br)
+                } catch (e: IllegalArgumentException) {
+                    // Receiver already unregistered
+                }
+            }
             broadcastReceiver.clear()
             synchronized(registeredActions) {
                 registeredActions.clear()
+            }
+            synchronized(messageQueues) {
+                messageQueues.clear()
             }
             receiver.onDisconnect(this@GarminDeviceClient)
         }
@@ -224,10 +233,19 @@ class GarminDeviceClient(
         // race that @Volatile alone cannot prevent.
         synchronized(bindLock) { state = State.DISPOSED }
         executor.shutdown()
-        broadcastReceiver.forEach { context.unregisterReceiver(it) }
+        broadcastReceiver.forEach { br ->
+            try {
+                context.unregisterReceiver(br)
+            } catch (e: IllegalArgumentException) {
+                // Receiver already unregistered
+            }
+        }
         broadcastReceiver.clear()
         synchronized(registeredActions) {
             registeredActions.clear()
+        }
+        synchronized(messageQueues) {
+            messageQueues.clear()
         }
         try {
             context.unbindService(ciqServiceConnection)
@@ -318,6 +336,9 @@ class GarminDeviceClient(
                     }
                 }
                 queue.poll()
+                if (queue.isEmpty()) {
+                    messageQueues.remove(deviceId to appId)
+                }
                 receiver.onSendMessage(this, msg.app.device.id, msg.app.id, errorMessage)
                 if (queue.isNotEmpty()) {
                     Schedulers.io().scheduleDirect { retryMessage(deviceId, appId) }
@@ -392,7 +413,13 @@ class GarminDeviceClient(
                 Schedulers.io().scheduleDirect({ retryMessage(msg.app.device.id, msg.app.id) }, delaySec, TimeUnit.SECONDS)
             } else {
                 aapsLogger.warn(LTag.GARMIN, "sendMessage: max retries reached for ${msg.app}, dropping message")
-                synchronized(messageQueues) { messageQueues[msg.app.device.id to msg.app.id]?.poll() }
+                synchronized(messageQueues) {
+                    val q = messageQueues[msg.app.device.id to msg.app.id]
+                    q?.poll()
+                    if (q?.isEmpty() == true) {
+                        messageQueues.remove(msg.app.device.id to msg.app.id)
+                    }
+                }
                 receiver.onSendMessage(this, msg.app.device.id, msg.app.id, "ciqService unavailable after ${msg.attempt} attempts")
             }
             return

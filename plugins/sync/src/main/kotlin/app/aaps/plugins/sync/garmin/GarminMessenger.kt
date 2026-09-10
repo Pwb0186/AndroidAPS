@@ -72,7 +72,9 @@ class GarminMessenger(
         val isNew = client !in clients
         if (isNew) {
             clients.add(client)
-            connectionStateCallback(true)
+            if (clients.size == 1) {
+                connectionStateCallback(true)
+            }
         }
     }
 
@@ -86,7 +88,9 @@ class GarminMessenger(
             val deviceIds = devices.filter { (_, d) -> d.client == client }.map { (id, _) -> id }
             deviceIds.forEach { id -> devices.remove(id) }
         }
-        connectionStateCallback(false)
+        if (clients.isEmpty()) {
+            connectionStateCallback(false)
+        }
         client.dispose()
         when (client) {
             is GarminDeviceClient -> {
@@ -162,8 +166,8 @@ class GarminMessenger(
         aapsLogger.info(LTag.GARMIN, "sendMessage $app ${data.size} bytes $s")
         try {
             app.client.sendMessage(app, data)
-        } catch (e: IllegalStateException) {
-            aapsLogger.error(LTag.GARMIN, "${app.client} not connected", e)
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.GARMIN, "${app.client} not connected or send failed", e)
         }
     }
 
