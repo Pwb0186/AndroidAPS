@@ -105,6 +105,9 @@ class GarminPlugin @Inject constructor(
         private const val PREF_GARMIN_LAST_TS = "garmin_http_last_steps_ts"
     }
 
+    // Lock til trådsikker skridt-ingest mod race conditions fra HttpServer trådpulje
+    private val stepsIngestLock = Any()
+
     @VisibleForTesting
     var garminMessengerField: GarminMessenger? = null
     val garminMessenger: GarminMessenger
@@ -736,7 +739,7 @@ class GarminPlugin @Inject constructor(
             val totalSteps = getQueryParameter(uri, "steps")?.toIntOrNull() ?: -1
             aapsLogger.debug(LTag.GARMIN, "Garmin Swissalpine workaround. Received steps $totalSteps")
             if (totalSteps >= 0) {
-                ingestHttpTotalSteps(uri, totalSteps, samplingStart, samplingEnd)
+                ingestHttpTotalSteps(uri, totalSteps, samplingStart, samplingEnd, test)
                 return
             }
 
@@ -760,39 +763,74 @@ class GarminPlugin @Inject constructor(
         )
     }
 
-    private fun ingestHttpTotalSteps(uri: URI, totalSteps: Int, samplingStart: Long, samplingEnd: Long) {
-        val device = getQueryParameter(uri, "device")
-        val none = 0
-
-        val now = System.currentTimeMillis()
-        val lastTotal = sp.getInt(PREF_GARMIN_LAST_STEPS, -1)
-
-        // Første måling nogensinde → gem kun basisværdi uden delta
-        if (lastTotal < 0) {
-            sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
-            sp.putLong(PREF_GARMIN_LAST_TS, now)
-            aapsLogger.info(LTag.GARMIN, "[GarminHTTP] baseline steps=$totalSteps")
+    private fun ingestHttpTotalSteps(
+        uri: URI,
+        totalSteps: Int,
+        samplingStart: Long,
+        samplingEnd: Long,
+        test: Boolean
+    ) {
+        if (test) {
+            aapsLogger.info(LTag.GARMIN, "[GarminHTTP] test mode active, skipping steps ingest (total=$totalSteps)")
             return
         }
 
-        val delta = totalSteps - lastTotal
+        synchronized(stepsIngestLock) {
+            val device = getQueryParameter(uri, "device")
+            val none = 0
 
-        if (delta <= 0) {
-            aapsLogger.warn(
-                LTag.GARMIN,
-                "[GarminHTTP] negative / 0 step delta=$delta (total=$totalSteps last=$lastTotal)"
-            )
-            if (totalSteps > 0 && delta == 0) {
+            val now = System.currentTimeMillis()
+            val lastTotal = sp.getInt(PREF_GARMIN_LAST_STEPS, -1)
+
+            // Første måling nogensinde → gem kun basisværdi uden delta
+            if (lastTotal < 0) {
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
-                val midnight = LocalDate.now()
-                    .atStartOfDay(ZoneId.systemDefault())
-                    .toInstant()
-                    .toEpochMilli()
-                val todayCount = persistenceLayer.getStepsCountFromTimeToTime(midnight, now)
-                    .count { it.device == device }
-                if (todayCount == 0) {
-                    aapsLogger.info(LTag.GARMIN, "[GarminHTTP] no records today, storing initial total=$totalSteps")
+                aapsLogger.info(LTag.GARMIN, "[GarminHTTP] baseline steps=$totalSteps")
+                return
+            }
+
+            val delta = totalSteps - lastTotal
+
+            if (delta <= 0) {
+                aapsLogger.warn(
+                    LTag.GARMIN,
+                    "[GarminHTTP] negative / 0 step delta=$delta (total=$totalSteps last=$lastTotal)"
+                )
+                if (totalSteps > 0 && delta == 0) {
+                    sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
+                    sp.putLong(PREF_GARMIN_LAST_TS, now)
+                    val midnight = LocalDate.now()
+                        .atStartOfDay(ZoneId.systemDefault())
+                        .toInstant()
+                        .toEpochMilli()
+                    val todayCount = persistenceLayer.getStepsCountFromTimeToTime(midnight, now)
+                        .count { it.device == device }
+                    if (todayCount == 0) {
+                        aapsLogger.info(LTag.GARMIN, "[GarminHTTP] no records today, storing initial total=$totalSteps")
+                        loopHub.storeStepsCount(
+                            Instant.ofEpochSecond(samplingStart),
+                            Instant.ofEpochSecond(samplingEnd),
+                            totalSteps,
+                            none,
+                            none,
+                            none,
+                            none,
+                            none,
+                            device
+                        )
+                    } else {
+                        aapsLogger.info(LTag.GARMIN, "[GarminHTTP] delta=0 but $todayCount records already today, skipping")
+                    }
+                    return
+                } else {
+                    // Midnat eller ur nulstillet
+                    aapsLogger.warn(
+                        LTag.GARMIN,
+                        "[GarminHTTP] takeover initial total=$totalSteps "
+                    )
+                    sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
+                    sp.putLong(PREF_GARMIN_LAST_TS, now)
                     loopHub.storeStepsCount(
                         Instant.ofEpochSecond(samplingStart),
                         Instant.ofEpochSecond(samplingEnd),
@@ -804,51 +842,29 @@ class GarminPlugin @Inject constructor(
                         none,
                         device
                     )
-                } else {
-                    aapsLogger.info(LTag.GARMIN, "[GarminHTTP] delta=0 but $todayCount records already today, skipping")
                 }
                 return
-            } else {
-                // Midnat eller ur nulstillet
-                aapsLogger.warn(
-                    LTag.GARMIN,
-                    "[GarminHTTP] takeover initial total=$totalSteps "
-                )
-                sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
-                sp.putLong(PREF_GARMIN_LAST_TS, now)
-                loopHub.storeStepsCount(
-                    Instant.ofEpochSecond(samplingStart),
-                    Instant.ofEpochSecond(samplingEnd),
-                    totalSteps,
-                    none,
-                    none,
-                    none,
-                    none,
-                    none,
-                    device
-                )
             }
-            return
+
+            aapsLogger.info(
+                LTag.GARMIN,
+                "[GarminHTTP] steps delta=$delta (${Instant.ofEpochSecond(samplingStart)} → ${Instant.ofEpochSecond(samplingEnd)}) Total: $totalSteps"
+            )
+
+            sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
+            sp.putLong(PREF_GARMIN_LAST_TS, now)
+            loopHub.storeStepsCount(
+                Instant.ofEpochSecond(samplingStart),
+                Instant.ofEpochSecond(samplingEnd),
+                delta,
+                none,
+                none,
+                none,
+                none,
+                none,
+                device
+            )
         }
-
-        aapsLogger.info(
-            LTag.GARMIN,
-            "[GarminHTTP] steps delta=$delta (${Instant.ofEpochSecond(samplingStart)} → ${Instant.ofEpochSecond(samplingEnd)}) Total: $totalSteps"
-        )
-
-        sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
-        sp.putLong(PREF_GARMIN_LAST_TS, now)
-        loopHub.storeStepsCount(
-            Instant.ofEpochSecond(samplingStart),
-            Instant.ofEpochSecond(samplingEnd),
-            delta,
-            none,
-            none,
-            none,
-            none,
-            none,
-            device
-        )
     }
 
     private fun receiveSteps(
