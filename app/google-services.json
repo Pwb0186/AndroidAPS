@@ -126,7 +126,7 @@
       "client_info": {
         "mobilesdk_app_id": "1:477603612366:android:efc956f55b281623",
         "android_client_info": {
-          "package_name": "info.nightscout.androidaps"
+          "package_name": "info.nightscout.androidaps.v4"
         }
       },
       "oauth_client": [
