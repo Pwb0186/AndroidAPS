@@ -24,6 +24,7 @@ import java.lang.Thread.UncaughtExceptionHandler
 import java.time.Instant
 import java.util.LinkedList
 import java.util.Queue
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -46,6 +47,10 @@ class GarminDeviceClient(
         }
     }
     private var bindLock = Any()
+    /** Retry/backoff state for [bindService]. Both are only touched under [bindLock]. */
+    private var bindRetryAttempt = 0
+    private var bindAttemptId = 0
+
     private var ciqService: IConnectIQService? = null
         get() {
             synchronized(bindLock) {
@@ -69,8 +74,8 @@ class GarminDeviceClient(
         }
 
     private val registeredActions = mutableSetOf<String>()
-    private val broadcastReceiver = mutableListOf<BroadcastReceiver>()
-    private var state = State.DISCONNECTED
+    private val broadcastReceiver = CopyOnWriteArrayList<BroadcastReceiver>()
+    @Volatile private var state = State.DISCONNECTED
     private val serviceIntent
         get() = Intent(CONNECTIQ_SERVICE_ACTION).apply {
             component = CONNECTIQ_SERVICE_COMPONENT
@@ -89,17 +94,16 @@ class GarminDeviceClient(
 
     private val ciqServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            var notifyReceiver: Boolean
             val ciq: IConnectIQService
             synchronized(bindLock) {
                 aapsLogger.info(LTag.GARMIN, "ConnectIQ App connected")
                 ciq = IConnectIQService.Stub.asInterface(service)
-                notifyReceiver = state != State.RECONNECTING
                 state = State.CONNECTED
                 ciqService = ciq
+                bindRetryAttempt = 0
                 bindLock.notifyAll()
             }
-            if (notifyReceiver) receiver.onConnect(this@GarminDeviceClient)
+            receiver.onConnect(this@GarminDeviceClient)
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -108,9 +112,20 @@ class GarminDeviceClient(
                 ciqService = null
                 if (state != State.DISPOSED) state = State.DISCONNECTED
             }
-            broadcastReceiver.forEach { br -> context.unregisterReceiver(br) }
+            broadcastReceiver.forEach { br ->
+                try {
+                    context.unregisterReceiver(br)
+                } catch (e: IllegalArgumentException) {
+                    // Receiver already unregistered
+                }
+            }
             broadcastReceiver.clear()
-            registeredActions.clear()
+            synchronized(registeredActions) {
+                registeredActions.clear()
+            }
+            synchronized(messageQueues) {
+                messageQueues.clear()
+            }
             receiver.onDisconnect(this@GarminDeviceClient)
         }
     }
@@ -123,7 +138,55 @@ class GarminDeviceClient(
     }
 
     private fun bindService() {
-        context.bindService(serviceIntent, Context.BIND_AUTO_CREATE, executor, ciqServiceConnection)
+        val myAttemptId: Int
+        synchronized(bindLock) {
+            myAttemptId = ++bindAttemptId
+        }
+        val started = try {
+            context.bindService(serviceIntent, Context.BIND_AUTO_CREATE, executor, ciqServiceConnection)
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.GARMIN, "bindService() threw", e)
+            false
+        }
+        if (!started) {
+            aapsLogger.warn(LTag.GARMIN, "bindService() returned false - will retry")
+            scheduleReconnect()
+            return
+        }
+        Schedulers.io().scheduleDirect({
+            synchronized(bindLock) {
+                if (bindAttemptId == myAttemptId && state != State.CONNECTED && state != State.DISPOSED) {
+                    aapsLogger.warn(LTag.GARMIN, "ConnectIQ bind timed out after ${BIND_CONNECT_TIMEOUT_SEC}s - will retry")
+                    try {
+                        context.unbindService(ciqServiceConnection)
+                    } catch (e: Exception) {
+                        // Expected if it was never actually bound
+                    }
+                    scheduleReconnect()
+                }
+            }
+        }, BIND_CONNECT_TIMEOUT_SEC, TimeUnit.SECONDS)
+    }
+
+    private fun scheduleReconnect() {
+        val delaySec: Long
+        synchronized(bindLock) {
+            if (state == State.DISPOSED) return
+            state = State.RECONNECTING
+            delaySec = minOf(
+                BIND_RETRY_BASE_DELAY_SEC * (1L shl minOf(bindRetryAttempt, 5)),
+                BIND_RETRY_MAX_DELAY_SEC
+            )
+            bindRetryAttempt++
+        }
+        aapsLogger.info(LTag.GARMIN, "retrying ConnectIQ bind in ${delaySec}s (attempt $bindRetryAttempt)")
+        Schedulers.io().scheduleDirect({
+            synchronized(bindLock) {
+                if (state == State.DISPOSED) return@scheduleDirect
+                state = State.BINDING
+            }
+            bindService()
+        }, delaySec, TimeUnit.SECONDS)
     }
 
     override val connectedDevices: List<GarminDevice>
@@ -132,16 +195,30 @@ class GarminDeviceClient(
 
     override fun isDisposed() = state == State.DISPOSED
     override fun dispose() {
+        synchronized(bindLock) {
+            state = State.DISPOSED
+            bindLock.notifyAll()
+        }
         executor.shutdown()
-        broadcastReceiver.forEach { context.unregisterReceiver(it) }
+        broadcastReceiver.forEach { br ->
+            try {
+                context.unregisterReceiver(br)
+            } catch (e: IllegalArgumentException) {
+                // Receiver already unregistered
+            }
+        }
         broadcastReceiver.clear()
-        registeredActions.clear()
+        synchronized(registeredActions) {
+            registeredActions.clear()
+        }
+        synchronized(messageQueues) {
+            messageQueues.clear()
+        }
         try {
             context.unbindService(ciqServiceConnection)
         } catch (e: Exception) {
             aapsLogger.warn(LTag.GARMIN, "unbind CIQ failed ${e.message}")
         }
-        state = State.DISPOSED
     }
 
     /** Creates a unique action name for ConnectIQ callbacks. */
@@ -219,6 +296,9 @@ class GarminDeviceClient(
                     }
                 }
                 queue.poll()
+                if (queue.isEmpty()) {
+                    messageQueues.remove(deviceId to appId)
+                }
                 receiver.onSendMessage(this, msg.app.device.id, msg.app.id, errorMessage)
                 if (queue.isNotEmpty()) {
                     Schedulers.io().scheduleDirect { retryMessage(deviceId, appId) }
@@ -281,7 +361,26 @@ class GarminDeviceClient(
         msg.attempt++
         msg.lastAttempt = Instant.now()
         val iqMsg = IQMessage(msg.data, context.packageName, sendMessageAction)
-        ciqService?.sendMessage(iqMsg, msg.iqDevice, msg.iqApp)
+        val service = ciqService
+        if (service == null) {
+            aapsLogger.warn(LTag.GARMIN, "sendMessage: ciqService unavailable for ${msg.app} (attempt ${msg.attempt})")
+            if (msg.attempt < MAX_RETRIES) {
+                val delaySec = retryWaitFactor * msg.attempt
+                Schedulers.io().scheduleDirect({ retryMessage(msg.app.device.id, msg.app.id) }, delaySec, TimeUnit.SECONDS)
+            } else {
+                aapsLogger.warn(LTag.GARMIN, "sendMessage: max retries reached for ${msg.app}, dropping message")
+                synchronized(messageQueues) {
+                    val q = messageQueues[msg.app.device.id to msg.app.id]
+                    q?.poll()
+                    if (q?.isEmpty() == true) {
+                        messageQueues.remove(msg.app.device.id to msg.app.id)
+                    }
+                }
+                receiver.onSendMessage(this, msg.app.device.id, msg.app.id, "ciqService unavailable after ${msg.attempt} attempts")
+            }
+            return
+        }
+        service.sendMessage(iqMsg, msg.iqDevice, msg.iqApp)
     }
 
     override fun toString() = "$name[$state]"
@@ -299,5 +398,8 @@ class GarminDeviceClient(
         )
 
         const val MAX_RETRIES = 10
+        const val BIND_CONNECT_TIMEOUT_SEC = 15L
+        const val BIND_RETRY_BASE_DELAY_SEC = 10L
+        const val BIND_RETRY_MAX_DELAY_SEC = 300L
     }
 }

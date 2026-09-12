@@ -5,6 +5,8 @@ import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.HR
 import app.aaps.core.data.model.RM
+import app.aaps.core.data.model.SC
+import app.aaps.core.data.model.TT
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
@@ -114,6 +116,10 @@ class LoopHubImpl(
             preferences.get(UnitDoubleKey.OverviewHighMark), glucoseUnit
         )
 
+    /** Returns the currently active temporary target, if any. */
+    override val temporaryTarget: TT?
+        get() = runBlocking { persistenceLayer.getTemporaryTargetActiveAt(clock.millis()) }
+
     /** Tells the loop algorithm that the pump is physically connected. */
     override fun connectPump() {
         appScope.launch {
@@ -175,6 +181,47 @@ class LoopHubImpl(
         )
         appScope.launch {
             persistenceLayer.insertOrUpdateHeartRates(listOf(hr))
+        }
+    }
+
+    /**
+     * Gemmer skridttal i AAPS StepsCount-tabellen.
+     * Kode/princip lånt og tilpasset fra MTR (AIMI) og Swissalpine Garmin-integrationen.
+     */
+    override fun storeStepsCount(
+        samplingStart: Instant,
+        samplingEnd: Instant,
+        steps5min: Int,
+        steps10min: Int,
+        steps15min: Int,
+        steps30min: Int,
+        steps60min: Int,
+        steps180min: Int,
+        device: String?
+    ) {
+        val sc = SC(
+            dateCreated = clock.millis(),
+            device = device ?: "Garmin",
+            duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
+            timestamp = samplingEnd.toEpochMilli(),
+            steps5min = steps5min,
+            steps10min = steps10min,
+            steps15min = steps15min,
+            steps30min = steps30min,
+            steps60min = steps60min,
+            steps180min = steps180min,
+        )
+        appScope.launch {
+            try {
+                val result = persistenceLayer.insertOrUpdateStepsCounts(listOf(sc))
+                val id = result.inserted.firstOrNull()?.id ?: result.updated.firstOrNull()?.id
+                aapsLogger.info(
+                    LTag.GARMIN,
+                    "✅ Steps stored in DB: ID=$id, 5min=$steps5min, timestamp=${java.util.Date(samplingEnd.toEpochMilli())}"
+                )
+            } catch (e: Exception) {
+                aapsLogger.error(LTag.GARMIN, "❌ Failed to store steps: ${e.message}")
+            }
         }
     }
 }
