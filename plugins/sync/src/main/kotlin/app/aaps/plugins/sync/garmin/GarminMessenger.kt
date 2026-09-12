@@ -96,6 +96,7 @@ class GarminMessenger(
     private var lastRestartMs = 0L
 
     override fun onDisconnect(client: GarminClient) {
+        if (disposed) return
         aapsLogger.info(LTag.GARMIN, "onDisconnect ${client.name}")
         synchronized(this) {
             if (client == activeDeviceClient) {
@@ -137,7 +138,9 @@ class GarminMessenger(
                     }, restartCount * 5L, java.util.concurrent.TimeUnit.SECONDS)
                 }
             }
-            is GarminSimulatorClient -> GarminSimulatorClient(aapsLogger, this)
+            is GarminSimulatorClient -> {
+                if (!disposed) GarminSimulatorClient(aapsLogger, this)
+            }
             else -> aapsLogger.warn(LTag.GARMIN, "onDisconnect unknown client $client")
         }
     }

@@ -231,7 +231,10 @@ class GarminDeviceClient(
         // Set DISPOSED first under bindLock so any in-flight scheduleReconnect()
         // or bindService() timeout sees it and aborts - closes the check-then-act
         // race that @Volatile alone cannot prevent.
-        synchronized(bindLock) { state = State.DISPOSED }
+        synchronized(bindLock) {
+            state = State.DISPOSED
+            bindLock.notifyAll()
+        }
         executor.shutdown()
         broadcastReceiver.forEach { br ->
             try {
