@@ -134,9 +134,9 @@ android {
     productFlavors {
         create("full") {
             isDefault = true
-            applicationId = "info.nightscout.androidaps"
+            applicationId = "info.nightscout.androidaps.v4"
             dimension = "standard"
-            resValue("string", "app_name", "AAPS")
+            resValue("string", "app_name", "AAPS V4")
             versionName = Versions.appVersion
             manifestPlaceholders["appIcon"] = "@mipmap/ic_launcher"
             manifestPlaceholders["appIconRound"] = "@mipmap/ic_launcher_round"
