@@ -32,6 +32,7 @@ class GarminMessenger(
 ): Disposable, GarminReceiver {
 
     @Volatile private var disposed: Boolean = false
+    private var activeDeviceClient: GarminDeviceClient? = null
     /** All devices that where connected since this instance was created. */
     private val devices = mutableMapOf<Long, GarminDevice>()
     // CopyOnWriteArrayList ensures thread safety: onConnect/onDisconnect write
@@ -62,11 +63,24 @@ class GarminMessenger(
     }
 
     private fun startDeviceClient() {
-        GarminDeviceClient(aapsLogger, context, this)
+        synchronized(this) {
+            if (disposed) return
+            activeDeviceClient?.dispose()
+            activeDeviceClient = GarminDeviceClient(aapsLogger, context, this)
+        }
     }
 
     override fun onConnect(client: GarminClient) {
         aapsLogger.info(LTag.GARMIN, "onConnect $client")
+        synchronized(this) {
+            if (disposed) {
+                client.dispose()
+                if (client == activeDeviceClient) {
+                    activeDeviceClient = null
+                }
+                return
+            }
+        }
         // Guard against duplicate entries: onServiceConnected can fire more than
         // once if the getter's reconnect branch triggers a re-bind (K4 fix).
         val isNew = client !in clients
@@ -83,6 +97,11 @@ class GarminMessenger(
 
     override fun onDisconnect(client: GarminClient) {
         aapsLogger.info(LTag.GARMIN, "onDisconnect ${client.name}")
+        synchronized(this) {
+            if (client == activeDeviceClient) {
+                activeDeviceClient = null
+            }
+        }
         clients.remove(client)
         synchronized (devices) {
             val deviceIds = devices.filter { (_, d) -> d.client == client }.map { (id, _) -> id }
@@ -172,11 +191,15 @@ class GarminMessenger(
     }
 
     override fun dispose() {
-        if (!disposed) {
-            clients.forEach { c -> c.dispose() }
-            disposed = true
+        synchronized(this) {
+            if (!disposed) {
+                disposed = true
+                activeDeviceClient?.dispose()
+                activeDeviceClient = null
+                clients.forEach { c -> c.dispose() }
+                clients.clear()
+            }
         }
-        clients.clear()
     }
 
     override fun isDisposed() = disposed

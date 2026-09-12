@@ -515,14 +515,29 @@ class GarminPlugin @Inject constructor(
     fun requestHandler(action: (URI) -> CharSequence) = { caller: SocketAddress, uri: URI, _: String? ->
         val key = garminAapsKey
         val deviceKey = getQueryParameter(uri, "key")
-        if (key.isNotEmpty() && key != deviceKey) {
-            aapsLogger.warn(LTag.GARMIN, "Invalid AAPS Key from $caller, got '$deviceKey' want '$key' $uri")
-            Thread.sleep(1000L)
-            HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
+        val isSensitiveEndpoint = uri.path == "/carbs" || uri.path == "/connect"
+
+        if (isSensitiveEndpoint) {
+            // Følsomme handlinger (kulhydrater og pumpeafbrydelse) kræver altid gyldig nøgle
+            if (key.isEmpty() || key != deviceKey) {
+                aapsLogger.warn(LTag.GARMIN, "Unauthorized HTTP access attempt to sensitive endpoint ${uri.path} from $caller")
+                HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
+            } else {
+                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri")
+                HttpURLConnection.HTTP_OK to action(uri).also {
+                    aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri, result: $it")
+                }
+            }
         } else {
-            aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri")
-            HttpURLConnection.HTTP_OK to action(uri).also {
-                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri, result: $it")
+            // Læse-endpoints (/get, /sgv.json): afvis hvis konfigureret nøgle ikke matcher
+            if (key.isNotEmpty() && key != deviceKey) {
+                aapsLogger.warn(LTag.GARMIN, "Unauthorized HTTP access attempt to ${uri.path} from $caller")
+                HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
+            } else {
+                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri")
+                HttpURLConnection.HTTP_OK to action(uri).also {
+                    aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri, result: $it")
+                }
             }
         }
     }
@@ -776,11 +791,12 @@ class GarminPlugin @Inject constructor(
         }
 
         synchronized(stepsIngestLock) {
-            val device = getQueryParameter(uri, "device")
+            val canonicalDevice = getQueryParameter(uri, "device") ?: "Garmin"
             val none = 0
 
             val now = System.currentTimeMillis()
             val lastTotal = sp.getInt(PREF_GARMIN_LAST_STEPS, -1)
+            val lastTs = sp.getLong(PREF_GARMIN_LAST_TS, 0L)
 
             // Første måling nogensinde → gem kun basisværdi uden delta
             if (lastTotal < 0) {
@@ -790,22 +806,53 @@ class GarminPlugin @Inject constructor(
                 return
             }
 
+            val today = LocalDate.now(ZoneId.systemDefault())
+            val lastDate = if (lastTs > 0L) Instant.ofEpochMilli(lastTs).atZone(ZoneId.systemDefault()).toLocalDate() else today
+            val isNewDay = today.isAfter(lastDate)
             val delta = totalSteps - lastTotal
 
-            if (delta <= 0) {
+            if (isNewDay) {
+                // Midnatsskift — uret er nulstillet og tæller forfra for den nye dag
+                aapsLogger.info(
+                    LTag.GARMIN,
+                    "[GarminHTTP] midnight rollover detected (lastDate=$lastDate today=$today totalSteps=$totalSteps)"
+                )
+                sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
+                sp.putLong(PREF_GARMIN_LAST_TS, now)
+                if (totalSteps > 0) {
+                    loopHub.storeStepsCount(
+                        Instant.ofEpochSecond(samplingStart),
+                        Instant.ofEpochSecond(samplingEnd),
+                        totalSteps,
+                        none,
+                        none,
+                        none,
+                        none,
+                        none,
+                        canonicalDevice
+                    )
+                }
+                return
+            }
+
+            if (delta < 0) {
+                // Sensor-glitch, ur-genstart eller tidsjustering på samme dag.
+                // Juster kun baseline uden at gemme totalSteps som 5-minutters aktivitet!
                 aapsLogger.warn(
                     LTag.GARMIN,
-                    "[GarminHTTP] negative / 0 step delta=$delta (total=$totalSteps last=$lastTotal)"
+                    "[GarminHTTP] step counter dropped from $lastTotal to $totalSteps on same day; adjusting baseline without storing spike"
                 )
-                if (totalSteps > 0 && delta == 0) {
-                    sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
-                    sp.putLong(PREF_GARMIN_LAST_TS, now)
-                    val midnight = LocalDate.now()
-                        .atStartOfDay(ZoneId.systemDefault())
-                        .toInstant()
-                        .toEpochMilli()
+                sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
+                sp.putLong(PREF_GARMIN_LAST_TS, now)
+                return
+            }
+
+            if (delta == 0) {
+                sp.putLong(PREF_GARMIN_LAST_TS, now)
+                if (totalSteps > 0) {
+                    val midnight = today.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
                     val todayCount = persistenceLayer.getStepsCountFromTimeToTime(midnight, now)
-                        .count { it.device == device }
+                        .count { it.device == canonicalDevice }
                     if (todayCount == 0) {
                         aapsLogger.info(LTag.GARMIN, "[GarminHTTP] no records today, storing initial total=$totalSteps")
                         loopHub.storeStepsCount(
@@ -817,35 +864,16 @@ class GarminPlugin @Inject constructor(
                             none,
                             none,
                             none,
-                            device
+                            canonicalDevice
                         )
                     } else {
                         aapsLogger.info(LTag.GARMIN, "[GarminHTTP] delta=0 but $todayCount records already today, skipping")
                     }
-                    return
-                } else {
-                    // Midnat eller ur nulstillet
-                    aapsLogger.warn(
-                        LTag.GARMIN,
-                        "[GarminHTTP] takeover initial total=$totalSteps "
-                    )
-                    sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
-                    sp.putLong(PREF_GARMIN_LAST_TS, now)
-                    loopHub.storeStepsCount(
-                        Instant.ofEpochSecond(samplingStart),
-                        Instant.ofEpochSecond(samplingEnd),
-                        totalSteps,
-                        none,
-                        none,
-                        none,
-                        none,
-                        none,
-                        device
-                    )
                 }
                 return
             }
 
+            // delta > 0: Normal aktivitet
             aapsLogger.info(
                 LTag.GARMIN,
                 "[GarminHTTP] steps delta=$delta (${Instant.ofEpochSecond(samplingStart)} → ${Instant.ofEpochSecond(samplingEnd)}) Total: $totalSteps"
@@ -862,7 +890,7 @@ class GarminPlugin @Inject constructor(
                 none,
                 none,
                 none,
-                device
+                canonicalDevice
             )
         }
     }
@@ -930,7 +958,9 @@ class GarminPlugin @Inject constructor(
     }
 
     private fun glucoseSlopeMgDlPerMilli(glucose1: GV, glucose2: GV): Double {
-        return (glucose2.value - glucose1.value) / (glucose2.timestamp - glucose1.timestamp)
+        val dt = glucose2.timestamp - glucose1.timestamp
+        if (dt <= 0L) return 0.0
+        return (glucose2.value - glucose1.value) / dt
     }
 
     /** Returns glucose values in Nightscout/Xdrip format. */
