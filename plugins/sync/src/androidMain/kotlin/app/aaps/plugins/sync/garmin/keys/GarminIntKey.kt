@@ -17,6 +17,7 @@ enum class GarminIntKey(
 ) : IntPreferenceKey {
 
     LocalHttpPort("communication_http_port", 28891, 1001, 65535, dependency = GarminBooleanKey.LocalHttpServer, title = SyncStrings.garmin_local_http_server_port, defaultedBySM = true, hideParentScreenIfHidden = true),
+    LastStepsTotal("garmin_last_steps_total", 0, 0, Int.MAX_VALUE, title = SyncStrings.garmin),
     ;
 
 }
