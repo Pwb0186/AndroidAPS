@@ -64,7 +64,7 @@ import kotlin.math.roundToInt
  */
 private val WATCHDOG_MIN_REBUILD_INTERVAL_MS = TimeUnit.MINUTES.toMillis(2)
 private val APP_ID_REGEX = Regex("^[0-9A-Fa-f]{32}$")
-private const val PUSH_ACTIVE_WINDOW_MS = 60 * 60 * 1000L      // 60 min active push window
+private const val PUSH_ACTIVE_WINDOW_MS = 30 * 60 * 1000L      // 30 min active push window
 private const val HTTP_FRESH_WINDOW_MS = 15 * 60 * 1000L       // 15 min HTTP-active threshold
 private const val TTL_EVICTION_MS = 7 * 24 * 60 * 60 * 1000L   // 7 days full cleanup
 private const val MAX_REGISTERED_APPS = 5
