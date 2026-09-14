@@ -866,9 +866,8 @@ class GarminPlugin @Inject constructor(
 
         val hasData = steps5 > 0 || steps10 > 0 || steps15 > 0 || steps30 > 0 || steps60 > 0 || steps180 > 0
         if (!hasData) {
-            // Handles watch sending daily cumulative total "steps=xxx" (MTR / Swissalpine logic)
             val totalSteps = getQueryParameter(uri, "steps")?.toIntOrNull() ?: -1
-            aapsLogger.debug(LTag.GARMIN, "Garmin Swissalpine workaround. Received steps $totalSteps")
+            aapsLogger.debug(LTag.GARMIN, "Garmin sent steps: $totalSteps")
             if (totalSteps >= 0) {
                 ingestHttpTotalSteps(uri, totalSteps, samplingStart, samplingEnd, test)
                 return
