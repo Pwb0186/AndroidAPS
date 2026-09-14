@@ -100,12 +100,12 @@ class GarminPlugin @Inject constructor(
     private var server: HttpServer? = null
 
     companion object {
-        // Konstanter til skridt-synkronisering (lånt fra MTR og Swissalpine)
+        // Constants for step synchronization (adapted from MTR and Swissalpine)
         private const val PREF_GARMIN_LAST_STEPS = "garmin_http_last_steps"
         private const val PREF_GARMIN_LAST_TS = "garmin_http_last_steps_ts"
     }
 
-    // Lock til trådsikker skridt-ingest mod race conditions fra HttpServer trådpulje
+    // Lock for thread-safe step ingestion against race conditions from HttpServer thread pool
     private val stepsIngestLock = Any()
 
     @VisibleForTesting
@@ -262,9 +262,8 @@ class GarminPlugin @Inject constructor(
 
     private fun setupGarminMessenger() {
         resetGarminMessenger()
-        // Assign the return value - previously it was discarded, leaving
-        // garminMessengerField=null so the next getter call created yet another
-        // orphaned instance with duplicate broadcast actions (K1 fix).
+        // Assign the return value - ensure the field is set so subsequent getter
+        // calls reuse this instance instead of creating duplicate broadcast receivers.
         garminMessengerField = createGarminMessenger()
         resetGarminMessengerV2()
         garminMessengerV2Field = createGarminMessengerV2()
@@ -414,7 +413,7 @@ class GarminPlugin @Inject constructor(
     }
 
     private fun sendPhoneAppMessageV2(device: GarminDevice) {
-        // K2: If watchdog just rebuilt the messenger, skip the immediate send.
+        // If watchdog just rebuilt the messenger, skip the immediate send.
         // The new messenger isn't connected yet; onV2ConnectionStateChanged(true)
         // will fire sendPhoneAppMessageV2() once it is.
         if (watchdogCheckV2()) return
@@ -422,7 +421,7 @@ class GarminPlugin @Inject constructor(
     }
 
     private fun sendPhoneAppMessageV2() {
-        // K2: Same race guard as the device-specific overload above.
+        // Skip immediate send if watchdog initiated a rebuild; reconnection handler will send fresh data.
         if (watchdogCheckV2()) return
         garminMessengerV2.sendMessage(getGlucoseMessageV2())
     }
@@ -518,7 +517,7 @@ class GarminPlugin @Inject constructor(
         val isSensitiveEndpoint = uri.path == "/carbs" || uri.path == "/connect"
 
         if (isSensitiveEndpoint) {
-            // Følsomme handlinger (kulhydrater og pumpeafbrydelse) kræver altid gyldig nøgle
+            // Sensitive actions (carbs and pump disconnection) strictly require a valid key
             if (key.isEmpty() || key != deviceKey) {
                 aapsLogger.warn(LTag.GARMIN, "Unauthorized HTTP access attempt to sensitive endpoint ${uri.path} from $caller")
                 HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
@@ -529,7 +528,7 @@ class GarminPlugin @Inject constructor(
                 }
             }
         } else {
-            // Læse-endpoints (/get, /sgv.json): afvis hvis konfigureret nøgle ikke matcher
+            // Read endpoints (/get, /sgv.json): reject if configured key does not match
             if (key.isNotEmpty() && key != deviceKey) {
                 aapsLogger.warn(LTag.GARMIN, "Unauthorized HTTP access attempt to ${uri.path} from $caller")
                 HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
@@ -667,7 +666,7 @@ class GarminPlugin @Inject constructor(
 
     // =========================================================================
     // Garmin Steps Integration
-    // Kode og logik lånt og tilpasset fra MTR (AIMI) og Swissalpine Garmin-integrationen.
+    // Adapted from MTR (AIMI) and Swissalpine Garmin integration.
     // =========================================================================
 
     @VisibleForTesting
@@ -750,7 +749,7 @@ class GarminPlugin @Inject constructor(
 
         val hasData = steps5 > 0 || steps10 > 0 || steps15 > 0 || steps30 > 0 || steps60 > 0 || steps180 > 0
         if (!hasData) {
-            // Håndterer uret der sender samlet dagstotal "steps=xxx" (MTR / Swissalpine logik)
+            // Handles watch sending daily cumulative total "steps=xxx" (MTR / Swissalpine logic)
             val totalSteps = getQueryParameter(uri, "steps")?.toIntOrNull() ?: -1
             aapsLogger.debug(LTag.GARMIN, "Garmin Swissalpine workaround. Received steps $totalSteps")
             if (totalSteps >= 0) {
@@ -798,7 +797,7 @@ class GarminPlugin @Inject constructor(
             val lastTotal = sp.getInt(PREF_GARMIN_LAST_STEPS, -1)
             val lastTs = sp.getLong(PREF_GARMIN_LAST_TS, 0L)
 
-            // Første måling nogensinde → gem kun basisværdi uden delta
+            // First measurement ever → record baseline value only, no delta
             if (lastTotal < 0) {
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
@@ -812,7 +811,7 @@ class GarminPlugin @Inject constructor(
             val delta = totalSteps - lastTotal
 
             if (isNewDay) {
-                // Midnatsskift — uret er nulstillet og tæller forfra for den nye dag
+                // Midnight rollover — the watch step counter was reset for the new day
                 aapsLogger.info(
                     LTag.GARMIN,
                     "[GarminHTTP] midnight rollover detected (lastDate=$lastDate today=$today totalSteps=$totalSteps)"
@@ -836,8 +835,8 @@ class GarminPlugin @Inject constructor(
             }
 
             if (delta < 0) {
-                // Sensor-glitch, ur-genstart eller tidsjustering på samme dag.
-                // Juster kun baseline uden at gemme totalSteps som 5-minutters aktivitet!
+                // Sensor glitch, watch reboot, or time sync adjustment on the same day.
+                // Adjust baseline only without recording totalSteps as a 5-minute activity spike!
                 aapsLogger.warn(
                     LTag.GARMIN,
                     "[GarminHTTP] step counter dropped from $lastTotal to $totalSteps on same day; adjusting baseline without storing spike"
@@ -873,7 +872,7 @@ class GarminPlugin @Inject constructor(
                 return
             }
 
-            // delta > 0: Normal aktivitet
+            // delta > 0: Normal activity
             aapsLogger.info(
                 LTag.GARMIN,
                 "[GarminHTTP] steps delta=$delta (${Instant.ofEpochSecond(samplingStart)} → ${Instant.ofEpochSecond(samplingEnd)}) Total: $totalSteps"

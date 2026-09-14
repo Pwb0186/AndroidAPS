@@ -82,7 +82,7 @@ class GarminMessenger(
             }
         }
         // Guard against duplicate entries: onServiceConnected can fire more than
-        // once if the getter's reconnect branch triggers a re-bind (K4 fix).
+        // once if the getter's reconnect branch triggers a re-bind.
         val isNew = client !in clients
         if (isNew) {
             clients.add(client)

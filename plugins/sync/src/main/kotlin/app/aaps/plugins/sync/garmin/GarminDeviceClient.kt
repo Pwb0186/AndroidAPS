@@ -114,7 +114,7 @@ class GarminDeviceClient(
             }
             // Always notify - previously suppressed when state==RECONNECTING (getter branch),
             // causing the "send fresh data on reconnect" path to be silently skipped.
-            // GarminMessenger.onConnect now guards against duplicate client entries (K5).
+            // GarminMessenger.onConnect now guards against duplicate client entries.
             receiver.onConnect(this@GarminDeviceClient)
         }
 

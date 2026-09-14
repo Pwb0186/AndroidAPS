@@ -66,7 +66,7 @@ interface LoopHub {
     )
 
     /** Stores steps count readings aggregated over multiple intervals.
-     *  Lånt fra MTR (AIMI) og Swissalpine Garmin-integrationen. */
+     *  Adapted from MTR (AIMI) and Swissalpine Garmin integration. */
     fun storeStepsCount(
         samplingStart: Instant,
         samplingEnd: Instant,

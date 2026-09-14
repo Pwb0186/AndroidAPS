@@ -174,8 +174,8 @@ class LoopHubImpl @Inject constructor(
     }
 
     /**
-     * Gemmer skridttal i AAPS StepsCount-tabellen.
-     * Kode/princip lånt og tilpasset fra MTR (AIMI) og Swissalpine Garmin-integrationen.
+     * Stores step counts into the AAPS StepsCount table.
+     * Adapted from MTR (AIMI) and Swissalpine Garmin integration.
      */
     override fun storeStepsCount(
         samplingStart: Instant,
