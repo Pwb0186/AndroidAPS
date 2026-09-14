@@ -906,7 +906,10 @@ class GarminPlugin @Inject constructor(
         }
 
         synchronized(stepsIngestLock) {
-            val canonicalDevice = getQueryParameter(uri, "device") ?: "Garmin"
+            // Note: AAPS treats all Garmin step inputs as a single unified stream ("Garmin").
+            // Per-device tracking is not supported, matching the global PREF_GARMIN_LAST_STEPS.
+            val canonicalDevice = "Garmin"
+            val rawDevice = getQueryParameter(uri, "device") ?: "unknown"
             val none = 0
 
             val now = System.currentTimeMillis()
@@ -917,7 +920,7 @@ class GarminPlugin @Inject constructor(
             if (lastTotal < 0) {
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
-                aapsLogger.info(LTag.GARMIN, "[GarminHTTP] baseline steps=$totalSteps")
+                aapsLogger.info(LTag.GARMIN, "[GarminHTTP] baseline steps=$totalSteps (rawDevice=$rawDevice)")
                 return
             }
 
@@ -930,7 +933,7 @@ class GarminPlugin @Inject constructor(
                 // Midnight rollover — the watch step counter was reset for the new day
                 aapsLogger.info(
                     LTag.GARMIN,
-                    "[GarminHTTP] midnight rollover detected (lastDate=$lastDate today=$today totalSteps=$totalSteps)"
+                    "[GarminHTTP] midnight rollover detected (lastDate=$lastDate today=$today totalSteps=$totalSteps rawDevice=$rawDevice)"
                 )
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
@@ -951,40 +954,21 @@ class GarminPlugin @Inject constructor(
             }
 
             if (delta < 0) {
-                // Sensor glitch, watch reboot, or time sync adjustment on the same day.
+                // Sensor glitch, watch reboot, or watch/watchface change on the same day.
                 // Adjust baseline only without recording totalSteps as a 5-minute activity spike!
                 aapsLogger.warn(
                     LTag.GARMIN,
-                    "[GarminHTTP] step counter dropped from $lastTotal to $totalSteps on same day; adjusting baseline without storing spike"
+                    "[GarminHTTP] step counter dropped from $lastTotal to $totalSteps on same day (rawDevice=$rawDevice); adjusting baseline without storing spike"
                 )
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
                 return
             }
 
+            // delta == 0: No movement or duplicate call
             if (delta == 0) {
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
-                if (totalSteps > 0) {
-                    val midnight = today.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-                    val todayCount = persistenceLayer.getStepsCountFromTimeToTime(midnight, now)
-                        .count { it.device == canonicalDevice }
-                    if (todayCount == 0) {
-                        aapsLogger.info(LTag.GARMIN, "[GarminHTTP] no records today, storing initial total=$totalSteps")
-                        loopHub.storeStepsCount(
-                            Instant.ofEpochSecond(samplingStart),
-                            Instant.ofEpochSecond(samplingEnd),
-                            totalSteps,
-                            none,
-                            none,
-                            none,
-                            none,
-                            none,
-                            canonicalDevice
-                        )
-                    } else {
-                        aapsLogger.info(LTag.GARMIN, "[GarminHTTP] delta=0 but $todayCount records already today, skipping")
-                    }
-                }
+                aapsLogger.debug(LTag.GARMIN, "[GarminHTTP] delta=0, skipping (Total: $totalSteps, rawDevice=$rawDevice)")
                 return
             }
 
