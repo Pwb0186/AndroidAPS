@@ -73,7 +73,7 @@ private const val MAX_REGISTERED_APPS = 5
 private const val FAILURE_THRESHOLD_PER_APP = 3
 private const val REGISTRY_SAVE_DEBOUNCE_MS = 5_000L
 private const val PREF_GARMIN_DYNAMIC_V2_APPS = "garmin_dynamic_v2_apps"
-private const val MIN_PUSH_INTERVAL_MS = 15_000L               // 15 sec floor between pushes
+private const val MIN_PUSH_INTERVAL_MS = 3_000L                // 3 sec floor between pushes
 private const val KEEP_ALIVE_INTERVAL_MS = 15 * 60 * 1000L      // 15 min keep-alive push interval
 private const val KEEP_ALIVE_WINDOW_MS = 24 * 60 * 60 * 1000L  // Keep-alive for apps seen in last 24h
 
@@ -490,7 +490,7 @@ class GarminPlugin @Inject constructor(
         // Push outside the lock - sendPhoneAppMessageV2() talks to the Connect IQ
         // SDK, which shouldn't happen while holding valueLock (used elsewhere for
         // the HTTP long-poll wait).
-        if (isNew) sendPhoneAppMessageV2()
+        if (isNew) sendPhoneAppMessageV2(force = true)
     }
 
     @VisibleForTesting
