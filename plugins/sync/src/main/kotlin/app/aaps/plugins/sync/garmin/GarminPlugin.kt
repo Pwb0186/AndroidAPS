@@ -479,7 +479,6 @@ class GarminPlugin @Inject constructor(
     @VisibleForTesting
     fun onNewBloodGlucose(event: EventNewBG) {
         val timestamp = event.glucoseValueTimestamp ?: return
-        aapsLogger.info(LTag.GARMIN, "onNewBloodGlucose ${Date(timestamp)}")
         var isNew = false
         valueLock.withLock {
             if ((lastGlucoseValueTimestamp ?: 0) >= timestamp) return
@@ -490,7 +489,10 @@ class GarminPlugin @Inject constructor(
         // Push outside the lock - sendPhoneAppMessageV2() talks to the Connect IQ
         // SDK, which shouldn't happen while holding valueLock (used elsewhere for
         // the HTTP long-poll wait).
-        if (isNew) sendPhoneAppMessageV2(force = true)
+        if (isNew) {
+            aapsLogger.info(LTag.GARMIN, "onNewBloodGlucose ${Date(timestamp)}")
+            sendPhoneAppMessageV2(force = true)
+        }
     }
 
     @VisibleForTesting
@@ -703,7 +705,7 @@ class GarminPlugin @Inject constructor(
     private fun getQueryParameter(uri: URI, name: String): String? {
         val raw = (uri.query ?: "")
             .split("&")
-            .map { kv -> kv.split("=") }
+            .map { kv -> kv.split("=", limit = 2) }
             .firstOrNull { kv -> kv.size == 2 && kv[0] == name }?.get(1)
             ?: return null
         return try {

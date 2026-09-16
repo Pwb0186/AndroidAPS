@@ -357,6 +357,8 @@ class GarminDeviceClient(
                             val delaySec = retryWaitFactor * msg.attempt
                             Schedulers.io().scheduleDirect({ retryMessage(deviceId, appId) }, delaySec, TimeUnit.SECONDS)
                             return
+                        } else {
+                            errorMessage = "max retries reached: $status"
                         }
                     }
 
