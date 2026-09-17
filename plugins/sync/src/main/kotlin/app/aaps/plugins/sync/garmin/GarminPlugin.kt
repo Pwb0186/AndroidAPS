@@ -75,7 +75,12 @@ private const val REGISTRY_SAVE_DEBOUNCE_MS = 5_000L
 private const val PREF_GARMIN_DYNAMIC_V2_APPS = "garmin_dynamic_v2_apps"
 private const val MIN_PUSH_INTERVAL_MS = 3_000L                // 3 sec floor between pushes
 private const val KEEP_ALIVE_INTERVAL_MS = 15 * 60 * 1000L      // 15 min keep-alive push interval
-private const val KEEP_ALIVE_WINDOW_MS = 24 * 60 * 60 * 1000L  // Keep-alive for apps seen in last 24h
+// TEST 2026-09-17: keep-alive midlertidigt slaaet fra. Oprindelig vaerdi: 24 * 60 * 60 * 1000L.
+// Formaal: undersoege om keep-alive-pushes mod et app-id, hvis app IKKE koerer, er det der
+// oedelaegger push-kanalen. Med 0L returnerer getRecentV2AppIds(0) altid en tom maengde, saa
+// AAPS kun pusher til apps der har meldt sig inden for PUSH_ACTIVE_WINDOW_MS (30 min).
+// SAET TILBAGE TIL 24 * 60 * 60 * 1000L naar testen er koert.
+private const val KEEP_ALIVE_WINDOW_MS = 0L                    // var: 24 * 60 * 60 * 1000L
 
 /** Support communication with Garmin devices.
  *
@@ -526,7 +531,13 @@ class GarminPlugin @Inject constructor(
         val allTargetIds = activeIds + keepAliveIds
         if (watchdogCheck(allTargetIds)) return
         val targetIds = allTargetIds - excludedAppIds
-        if (targetIds.isEmpty()) return
+        if (targetIds.isEmpty()) {
+            // TEST 2026-09-17: positiv bekraeftelse paa at test-builden koerer, og at AAPS
+            // bevidst er tavs - ingen app inden for 30-min-vinduet og keep-alive slaaet fra.
+            // Fjernes sammen med KEEP_ALIVE_WINDOW_MS-aendringen naar testen er koert.
+            aapsLogger.info(LTag.GARMIN, "V2 push skipped: no target app (keep-alive disabled for test)")
+            return
+        }
 
         if (!lastV2PushAt.compareAndSet(prev, now)) return
         if (shouldKeepAlive) {
