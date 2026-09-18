@@ -49,10 +49,8 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Date
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.Condition
 import java.util.concurrent.locks.ReentrantLock
@@ -67,20 +65,22 @@ import kotlin.math.roundToInt
 private val WATCHDOG_MIN_REBUILD_INTERVAL_MS = TimeUnit.MINUTES.toMillis(2)
 private val APP_ID_REGEX = Regex("^[0-9A-Fa-f]{32}$")
 private const val PUSH_ACTIVE_WINDOW_MS = 30 * 60 * 1000L      // 30 min active push window
-private const val HTTP_FRESH_WINDOW_MS = 15 * 60 * 1000L       // 15 min HTTP-active threshold
 private const val TTL_EVICTION_MS = 7 * 24 * 60 * 60 * 1000L   // 7 days full cleanup
 private const val MAX_REGISTERED_APPS = 5
-private const val FAILURE_THRESHOLD_PER_APP = 3
 private const val REGISTRY_SAVE_DEBOUNCE_MS = 5_000L
 private const val PREF_GARMIN_DYNAMIC_V2_APPS = "garmin_dynamic_v2_apps"
 private const val MIN_PUSH_INTERVAL_MS = 3_000L                // 3 sec floor between pushes
-private const val KEEP_ALIVE_INTERVAL_MS = 15 * 60 * 1000L      // 15 min keep-alive push interval
-// TEST 2026-09-17: keep-alive midlertidigt slaaet fra. Oprindelig vaerdi: 24 * 60 * 60 * 1000L.
-// Formaal: undersoege om keep-alive-pushes mod et app-id, hvis app IKKE koerer, er det der
-// oedelaegger push-kanalen. Med 0L returnerer getRecentV2AppIds(0) altid en tom maengde, saa
-// AAPS kun pusher til apps der har meldt sig inden for PUSH_ACTIVE_WINDOW_MS (30 min).
-// SAET TILBAGE TIL 24 * 60 * 60 * 1000L naar testen er koert.
-private const val KEEP_ALIVE_WINDOW_MS = 0L                    // var: 24 * 60 * 60 * 1000L
+// V3.7: the keep-alive push (every 15 min to any app seen in the last 24 h) has been
+// removed. It was meant to be the only way back in for a watch face that had fallen out
+// of PUSH_ACTIVE_WINDOW_MS, but the watch face already has three faster ways back on its
+// own: the view redraws once a minute and calls BackgroundScheduler.schedule2(), the
+// temporal event polls every 5 min, and init2() polls ~2 s after any foreground start.
+// Measured 2026-09-17: switching back to the watch face produced a /get in the same
+// second (06:11:54), not five minutes later. The keep-alive therefore only ever pushed
+// at app IDs whose app was not running - 05:30:15, 05:45:18 and 06:00:37 that night all
+// went to a watch face that did not exist - with no way to notice, since Garmin Connect
+// Mobile answers SUCCESS for a dead app (30 of 31 for the demo face, which ran once in
+// three hours).
 
 /** Support communication with Garmin devices.
  *
@@ -152,10 +152,13 @@ class GarminPlugin @Inject constructor(
     private var appRegistryCache: MutableMap<String, Long>? = null
     private var lastRegistrySaveMs = 0L
 
-    private val consecutiveFailuresPerAppId = java.util.concurrent.ConcurrentHashMap<String, Int>()
-    private val excludedAppIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    private val lastFailureStartedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    private val consecutiveWatchdogRebuilds = java.util.concurrent.atomic.AtomicInteger(0)
+    // V3.7: the per-app failure counter, the exclusion set and the rebuild backoff
+    // ladder that used to live here have been removed. They were driven by the
+    // status Garmin Connect Mobile returns for a send, and that status says only
+    // "GCM accepted the bytes" - measured 2026-09-17, an app that was not running
+    // at all was answered SUCCESS 30 times out of 31. Across ~13 hours of logs
+    // there was 1 failure in 366 sends, it healed itself, and the watchdog never
+    // fired once. See watchdogCheck() below for what is left.
 
     private fun loadRegisteredV2Apps(): Map<String, Long> {
         val raw = sp.getString(PREF_GARMIN_DYNAMIC_V2_APPS, "")
@@ -208,28 +211,10 @@ class GarminPlugin @Inject constructor(
                 }
             }
 
-            // State hygiene: clean up tracking maps for evicted IDs
-            evicted.forEach { evId ->
-                consecutiveFailuresPerAppId.remove(evId)
-                excludedAppIds.remove(evId)
-                lastFailureStartedAt.remove(evId)
-            }
-
             if (previousLastSeen == 0L || now - lastRegistrySaveMs >= REGISTRY_SAVE_DEBOUNCE_MS) {
                 saveRegisteredV2Apps(registry)
                 lastRegistrySaveMs = now
             }
-        }
-
-        // Always remove from excludedAppIds so the app can receive pushes again
-        excludedAppIds.remove(appId)
-
-        // Only clear the failure counter if there was an actual gap (> 15 min),
-        // so that normal 5-minute polling does not reset CIQ failure accumulation
-        val now = clock.millis()
-        if (now - previousLastSeen > HTTP_FRESH_WINDOW_MS) {
-            consecutiveFailuresPerAppId.remove(appId)
-            lastFailureStartedAt.remove(appId)
         }
     }
 
@@ -248,15 +233,6 @@ class GarminPlugin @Inject constructor(
         }
     }
 
-    private fun getRecentV2AppIds(windowMs: Long): Set<String> {
-        val now = clock.millis()
-        return synchronized(appRegistryLock) {
-            (appRegistryCache ?: loadRegisteredV2Apps().toMutableMap().also { appRegistryCache = it })
-                .filter { (_, lastSeen) -> now - lastSeen < windowMs }
-                .keys.toSet()
-        }
-    }
-
     @VisibleForTesting
     val isConnected = AtomicBoolean(false)
 
@@ -264,90 +240,66 @@ class GarminPlugin @Inject constructor(
     val lastMessengerRebuildAt = AtomicLong(0)
 
     private val lastV2PushAt = AtomicLong(0)
-    private val lastKeepAlivePushAt = AtomicLong(0)
 
     private fun onConnectionStateChanged(connected: Boolean) {
         aapsLogger.info(LTag.GARMIN, "Garmin messenger connection state: $connected")
         isConnected.set(connected)
         if (connected) {
-            consecutiveWatchdogRebuilds.set(0)
             disposable.add(Schedulers.io().scheduleDirect { sendPhoneAppMessageV2() })
         }
     }
 
     private fun onSendResult(appId: String, success: Boolean, errorMessage: String?) {
+        // Logged only. The status is not a health signal: Garmin Connect Mobile
+        // answers SUCCESS for an app that is not running, so counting failures here
+        // cannot detect a dead push path. It is still worth logging - the one real
+        // failure we have ever seen (FAILURE_UNKNOWN, 2026-09-17 06:35:17) was a
+        // transient Bluetooth hiccup that the retry logic in GarminDeviceClient
+        // handled by itself.
         if (success) {
-            consecutiveFailuresPerAppId.remove(appId)
-            lastFailureStartedAt.remove(appId)
-            consecutiveWatchdogRebuilds.set(0)
             aapsLogger.debug(LTag.GARMIN, "Send OK to $appId")
         } else {
-            val failures = consecutiveFailuresPerAppId.merge(appId, 1) { old, _ -> old + 1 } ?: 1
-            if (failures == 1) {
-                lastFailureStartedAt[appId] = clock.millis()
-            }
-            if (failures >= FAILURE_THRESHOLD_PER_APP) {
-                excludedAppIds.add(appId)
-                aapsLogger.warn(LTag.GARMIN, "Excluding $appId from push after $failures failures: $errorMessage")
-            } else {
-                aapsLogger.warn(LTag.GARMIN, "Send failed to $appId ($failures in a row): $errorMessage")
-            }
+            aapsLogger.warn(LTag.GARMIN, "Send failed to $appId: $errorMessage")
         }
     }
 
-    private fun getRebuildBackoffMs(rebuildCount: Int): Long {
-        return when (rebuildCount) {
-            0 -> WATCHDOG_MIN_REBUILD_INTERVAL_MS
-            1 -> 5 * 60 * 1000L
-            2 -> 15 * 60 * 1000L
-            else -> 60 * 60 * 1000L
-        }
-    }
-
+    /**
+     * Rebuilds the messenger when Garmin Connect Mobile has told us the connection
+     * dropped. That is the one failure this can both see and repair: GCM is alive,
+     * but our binding to it is stale, so a fresh GarminMessenger re-binds and
+     * re-registers the receivers.
+     *
+     * V3.7: this used to have a second trigger - "every active app has 3+ failed
+     * sends while the watch is still polling us over HTTP". The idea was right (use
+     * the HTTP channel as an independent witness that the watch is alive), but it
+     * was wired to the send status, which is SUCCESS even when nothing receives the
+     * message, so it could never fire. If that detection is wanted back, it has to
+     * count pushes that produced no pull - not failed sends.
+     *
+     * Returns true when a rebuild happened; the caller then skips this push and the
+     * next one goes out through the new messenger.
+     */
     private fun watchdogCheck(activeIds: Set<String>): Boolean {
         if (activeIds.isEmpty()) return false
+        if (isConnected.get()) return false
 
         val now = clock.millis()
-        val currentBackoffMs = getRebuildBackoffMs(consecutiveWatchdogRebuilds.get())
         val prev = lastMessengerRebuildAt.get()
-        if (now - prev < currentBackoffMs) return false
+        if (now - prev < WATCHDOG_MIN_REBUILD_INTERVAL_MS) return false
+        if (!lastMessengerRebuildAt.compareAndSet(prev, now)) return false
 
-        val registry = synchronized(appRegistryLock) {
-            appRegistryCache ?: loadRegisteredV2Apps().toMutableMap().also { appRegistryCache = it }
+        aapsLogger.warn(
+            LTag.GARMIN,
+            "Garmin messenger watchdog: rebuilding (disconnected, activeIds=${activeIds.size})"
+        )
+        val oldMessenger: GarminMessenger?
+        synchronized(this) {
+            isConnected.set(false)
+            oldMessenger = garminMessengerField
+            garminMessengerField = createGarminMessenger()
         }
-
-        val allFailingButHttpFresh = activeIds.isNotEmpty() &&
-            activeIds.all { id ->
-                val failures = consecutiveFailuresPerAppId[id] ?: 0
-                val lastSeen = registry[id] ?: 0L
-                val failStartedAt = lastFailureStartedAt[id] ?: Long.MAX_VALUE
-                failures >= FAILURE_THRESHOLD_PER_APP &&
-                    now - lastSeen < HTTP_FRESH_WINDOW_MS &&
-                    lastSeen >= failStartedAt
-            }
-
-        if (!isConnected.get() || allFailingButHttpFresh) {
-            if (!lastMessengerRebuildAt.compareAndSet(prev, now)) return false
-            val rebuilds = consecutiveWatchdogRebuilds.incrementAndGet()
-            aapsLogger.warn(
-                LTag.GARMIN,
-                "Garmin messenger watchdog: rebuilding (connected=${isConnected.get()}, " +
-                    "allFailingButHttpFresh=$allFailingButHttpFresh, activeIds=${activeIds.size}, rebuildCount=$rebuilds)"
-            )
-            val oldMessenger: GarminMessenger?
-            synchronized(this) {
-                consecutiveFailuresPerAppId.clear()
-                excludedAppIds.clear()
-                lastFailureStartedAt.clear()
-                isConnected.set(false)
-
-                oldMessenger = garminMessengerField
-                garminMessengerField = createGarminMessenger()
-            }
-            oldMessenger?.let { disposable.remove(it) }
-            return true
-        }
-        return false
+        oldMessenger?.let { disposable.remove(it) }
+        return true
     }
 
     @VisibleForTesting
@@ -520,30 +472,15 @@ class GarminPlugin @Inject constructor(
         val prev = lastV2PushAt.get()
         if (!force && now - prev < MIN_PUSH_INTERVAL_MS) return
 
+        // V3.7: only apps that have polled within PUSH_ACTIVE_WINDOW_MS are pushed to.
+        // An app that has fallen out of that window is not running, so a push cannot
+        // reach it anyway - it re-registers itself the moment it polls again.
         val activeIds = getActiveV2AppIds()
-        val prevKeepAlive = lastKeepAlivePushAt.get()
-        val shouldKeepAlive = (now - prevKeepAlive >= KEEP_ALIVE_INTERVAL_MS)
-        val keepAliveIds = if (shouldKeepAlive) {
-            getRecentV2AppIds(KEEP_ALIVE_WINDOW_MS)
-        } else {
-            emptySet()
-        }
-        val allTargetIds = activeIds + keepAliveIds
-        if (watchdogCheck(allTargetIds)) return
-        val targetIds = allTargetIds - excludedAppIds
-        if (targetIds.isEmpty()) {
-            // TEST 2026-09-17: positiv bekraeftelse paa at test-builden koerer, og at AAPS
-            // bevidst er tavs - ingen app inden for 30-min-vinduet og keep-alive slaaet fra.
-            // Fjernes sammen med KEEP_ALIVE_WINDOW_MS-aendringen naar testen er koert.
-            aapsLogger.info(LTag.GARMIN, "V2 push skipped: no target app (keep-alive disabled for test)")
-            return
-        }
+        if (watchdogCheck(activeIds)) return
+        if (activeIds.isEmpty()) return
 
         if (!lastV2PushAt.compareAndSet(prev, now)) return
-        if (shouldKeepAlive) {
-            lastKeepAlivePushAt.compareAndSet(prevKeepAlive, now)
-        }
-        garminMessenger.sendMessage(getGlucoseMessageV2(), targetIds)
+        garminMessenger.sendMessage(getGlucoseMessageV2(), activeIds)
     }
 
     /**
@@ -583,6 +520,7 @@ class GarminPlugin @Inject constructor(
             "temporaryBasalRate" to
                 (loopHub.temporaryBasal.takeIf { it.isFinite() } ?: 1.0),
             "connected" to loopHub.isConnected,
+            "loopEnabled" to loopHub.isLoopEnabled,
             "timestamp" to clock.instant().epochSecond,
             // Re-added for backward compatibility: old watch faces and data fields
             // that receive V1 CIQ pushes may read this field.
@@ -706,6 +644,7 @@ class GarminPlugin @Inject constructor(
             jo.addProperty("temporaryTargetDurationMin", it.duration / 60000)
         } ?: jo.addProperty("temporaryTargetActive", false)
         jo.addProperty("connected", loopHub.isConnected)
+        jo.addProperty("loopEnabled", loopHub.isLoopEnabled)
         jo.addProperty("timestamp", clock.instant().epochSecond)
         // Re-added for backward compatibility: old watch faces using HTTP pull may read this field.
         // Only the first letter of the profile name is sent (matches original AAPS).
