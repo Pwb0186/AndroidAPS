@@ -18,6 +18,7 @@ import app.aaps.core.interfaces.sharedPreferences.SP
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventNewBG
 import app.aaps.core.interfaces.rx.events.EventPreferenceChange
+import app.aaps.core.interfaces.rx.events.EventRunningModeChange
 import app.aaps.core.interfaces.rx.events.EventTempBasalChange
 import app.aaps.core.interfaces.rx.events.EventTempTargetChange
 import app.aaps.core.interfaces.rx.events.EventTreatmentChange
@@ -372,7 +373,11 @@ class GarminPlugin @Inject constructor(
         // - EventTreatmentChange: entered insulin/carbs/bolus wizard results.
         // - EventTempTargetChange: a temporary target was set/cancelled.
         // - EventTempBasalChange: the temp basal rate changed.
-        // These three are merged and debounced: a single loop cycle can easily
+        // - EventRunningModeChange: the loop's running mode changed (e.g. the user
+        //   toggled the loop on/off, or it was suspended/resumed) - without this,
+        //   the watch's loopEnabled/connected fields would only refresh on the next
+        //   unrelated trigger or the 5-min poll.
+        // These are merged and debounced: a single loop cycle can easily
         // fire more than one of them within milliseconds of each other (e.g. an
         // SMB both logs a treatment and adjusts the temp basal), which would
         // otherwise trigger several near-identical sendPhoneAppMessageV2() calls
@@ -382,7 +387,8 @@ class GarminPlugin @Inject constructor(
                 listOf(
                     rxBus.toObservable(EventTreatmentChange::class.java),
                     rxBus.toObservable(EventTempTargetChange::class.java),
-                    rxBus.toObservable(EventTempBasalChange::class.java)
+                    rxBus.toObservable(EventTempBasalChange::class.java),
+                    rxBus.toObservable(EventRunningModeChange::class.java)
                 )
             )
                 .debounce(2, TimeUnit.SECONDS)
