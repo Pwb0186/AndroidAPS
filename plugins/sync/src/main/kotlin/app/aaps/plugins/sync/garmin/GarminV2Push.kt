@@ -30,19 +30,18 @@ import java.util.concurrent.atomic.AtomicLong
  * ping, never the payload itself - the watch always re-fetches the full
  * dataset over HTTP (GarminPlugin.onGetBloodGlucose()).
  *
- * V3.7: the keep-alive push (every 15 min to any app seen in the last 24 h)
- * has been removed. It was meant to be the only way back in for a watch
- * face that had fallen out of PUSH_ACTIVE_WINDOW_MS, but the watch face
- * already has three faster ways back on its own: the view redraws once a
- * minute and calls BackgroundScheduler.schedule2(), the temporal event
- * polls every 5 min, and init2() polls ~2 s after any foreground start.
- * Measured 2026-09-17: switching back to the watch face produced a /get in
- * the same second (06:11:54), not five minutes later. The keep-alive
- * therefore only ever pushed at app IDs whose app was not running -
- * 05:30:15, 05:45:18 and 06:00:37 that night all went to a watch face that
- * did not exist - with no way to notice, since Garmin Connect Mobile
- * answers SUCCESS for a dead app (30 of 31 for the demo face, which ran
- * once in three hours).
+ * There is deliberately no keep-alive push (a periodic push to every app
+ * seen in the last 24 h, regardless of whether it is still active). It
+ * looks like it should be the way back in for a watch face that has fallen
+ * out of PUSH_ACTIVE_WINDOW_MS, but the watch face already has three
+ * faster ways back on its own: the view redraws once a minute and calls
+ * BackgroundScheduler.schedule2(), the temporal event polls every 5 min,
+ * and init2() polls ~2 s after any foreground start. Measured: switching
+ * back to a watch face produced a /get in the same second, not five
+ * minutes later. A keep-alive would therefore only ever push to app IDs
+ * whose app is not running any more - with no way to notice, since Garmin
+ * Connect Mobile answers SUCCESS for a dead app just as often as for a
+ * live one.
  */
 class GarminV2Push(
     private val aapsLogger: AAPSLogger,
@@ -66,13 +65,14 @@ class GarminV2Push(
     private var appRegistryCache: MutableMap<String, Long>? = null
     private var lastRegistrySaveMs = 0L
 
-    // V3.7: the per-app failure counter, the exclusion set and the rebuild backoff
-    // ladder that used to live here have been removed. They were driven by the
-    // status Garmin Connect Mobile returns for a send, and that status says only
-    // "GCM accepted the bytes" - measured 2026-09-17, an app that was not running
-    // at all was answered SUCCESS 30 times out of 31. Across ~13 hours of logs
-    // there was 1 failure in 366 sends, it healed itself, and the watchdog never
-    // fired once. See watchdogCheck() below for what is left.
+    // There is deliberately no per-app failure counter, exclusion set or backoff
+    // ladder here. The status Garmin Connect Mobile returns for a send only means
+    // "GCM accepted the bytes", not that anything received it - measured, an app
+    // that was not running at all was still answered SUCCESS almost every time.
+    // Real failures are rare and self-healing; a scheme built on per-app send
+    // status can't distinguish a dead app from a live one. See watchdogCheck()
+    // below for the one thing that actually can (the messenger's own connection
+    // state).
 
     @VisibleForTesting
     val isConnected = AtomicBoolean(false)
@@ -167,12 +167,12 @@ class GarminV2Push(
      * but our binding to it is stale, so a fresh GarminMessenger re-binds and
      * re-registers the receivers.
      *
-     * V3.7: this used to have a second trigger - "every active app has 3+ failed
-     * sends while the watch is still polling us over HTTP". The idea was right (use
-     * the HTTP channel as an independent witness that the watch is alive), but it
-     * was wired to the send status, which is SUCCESS even when nothing receives the
-     * message, so it could never fire. If that detection is wanted back, it has to
-     * count pushes that produced no pull - not failed sends.
+     * A second trigger was considered - "every active app has 3+ failed sends
+     * while the watch is still polling us over HTTP". The idea is right (use the
+     * HTTP channel as an independent witness that the watch is alive), but it
+     * would have to be wired to the send status, which is SUCCESS even when
+     * nothing receives the message, so it could never fire. If that detection is
+     * wanted, it has to count pushes that produced no pull - not failed sends.
      *
      * Returns true when a rebuild happened; the caller then skips this push and the
      * next one goes out through the new messenger. `rebuildMessenger` is expected to

@@ -102,6 +102,14 @@ class GarminPlugin @Inject constructor(
         // Constants for step synchronization (adapted from MTR and Swissalpine)
         private const val PREF_GARMIN_LAST_STEPS = "garmin_http_last_steps"
         private const val PREF_GARMIN_LAST_TS = "garmin_http_last_steps_ts"
+
+        // Longest gap between two step readings whose delta is still stored.
+        // The delta is always stored as a single 5-minute record (steps5min), so a
+        // delta that actually accumulated over a much longer time (phone out of
+        // range, watch face not running, AAPS restarted) would show up as a false
+        // activity spike. Beyond this gap only the baseline is moved. Same limit
+        // as the midnight-rollover branch already used.
+        private const val MAX_STEPS_GAP_MS = 12 * 60 * 1000L
     }
 
     // Lock for thread-safe step ingestion against race conditions from HttpServer thread pool
@@ -341,7 +349,7 @@ class GarminPlugin @Inject constructor(
         val prev = garminV2Push.lastV2PushAt.get()
         if (!force && now - prev < GarminV2Push.MIN_PUSH_INTERVAL_MS) return
 
-        // V3.7: only apps that have polled within PUSH_ACTIVE_WINDOW_MS are pushed to.
+        // Only apps that have polled within PUSH_ACTIVE_WINDOW_MS are pushed to.
         // An app that has fallen out of that window is not running, so a push cannot
         // reach it anyway - it re-registers itself the moment it polls again.
         val activeIds = garminV2Push.getActiveV2AppIds()
@@ -745,6 +753,7 @@ class GarminPlugin @Inject constructor(
             val lastDate = if (lastTs > 0L) Instant.ofEpochMilli(lastTs).atZone(ZoneId.systemDefault()).toLocalDate() else today
             val isNewDay = today.isAfter(lastDate)
             val delta = totalSteps - lastTotal
+            val gapMs = now - lastTs
 
             if (isNewDay) {
                 // Midnight rollover — the watch step counter was reset for the new day
@@ -754,8 +763,7 @@ class GarminPlugin @Inject constructor(
                 )
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
-                val gapMs = now - lastTs
-                if (totalSteps > 0 && gapMs in 1..(15 * 60 * 1000L)) {
+                if (totalSteps > 0 && gapMs in 1..MAX_STEPS_GAP_MS) {
                     loopHub.storeStepsCount(
                         Instant.ofEpochSecond(samplingStart),
                         Instant.ofEpochSecond(samplingEnd),
@@ -792,6 +800,20 @@ class GarminPlugin @Inject constructor(
             if (delta == 0) {
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
                 aapsLogger.debug(LTag.GARMIN, "[GarminHTTP] delta=0, skipping (Total: $totalSteps, rawDevice=$rawDevice)")
+                return
+            }
+
+            // delta > 0 after a long gap (phone out of range, watch face not running,
+            // AAPS restarted): the steps accumulated over the whole gap, but would be
+            // stored as a single 5-minute record - a false activity spike. Move the
+            // baseline only, the same way the midnight-rollover branch above does.
+            if (gapMs !in 1..MAX_STEPS_GAP_MS) {
+                aapsLogger.info(
+                    LTag.GARMIN,
+                    "[GarminHTTP] long gap ($gapMs ms, delta=$delta, Total: $totalSteps, rawDevice=$rawDevice); adjusting baseline without storing spike"
+                )
+                sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
+                sp.putLong(PREF_GARMIN_LAST_TS, now)
                 return
             }
 
