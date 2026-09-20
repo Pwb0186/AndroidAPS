@@ -331,7 +331,7 @@ class GarminPlugin @Inject constructor(
     fun getGlucoseMessage() = mapOf<String, Any>(
         "key" to garminAapsKey,
         "command" to "glucose",
-        "profile" to (loopHub.currentProfileName.firstOrNull()?.toString() ?: ""),
+        "profile" to loopHub.currentProfileName.first().toString(),
         "encodedGlucose" to encodedGlucose(getGlucoseValues()),
         "remainingInsulin" to loopHub.insulinOnboard,
         "remainingBasalInsulin" to loopHub.insulinBasalOnboard,
@@ -447,9 +447,7 @@ class GarminPlugin @Inject constructor(
         jo.addProperty("connected", loopHub.isConnected)
         jo.addProperty("loopEnabled", loopHub.isLoopEnabled)
         jo.addProperty("timestamp", clock.instant().epochSecond)
-        // Re-added for backward compatibility: old watch faces using HTTP pull may read this field.
-        // Only the first letter of the profile name is sent (matches original AAPS).
-        jo.addProperty("profile", loopHub.currentProfileName.firstOrNull()?.toString() ?: "")
+        jo.addProperty("profile", loopHub.currentProfileName.first().toString())
         return jo.toString()
     }
 
