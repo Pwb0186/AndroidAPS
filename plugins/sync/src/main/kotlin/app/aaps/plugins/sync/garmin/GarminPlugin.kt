@@ -8,7 +8,6 @@ import androidx.preference.PreferenceScreen
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.plugin.PluginType
-import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
@@ -47,7 +46,6 @@ import java.nio.charset.StandardCharsets
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
-import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Date
 import java.util.concurrent.TimeUnit
@@ -76,7 +74,6 @@ class GarminPlugin @Inject constructor(
     private val sp: SP,
     private val context: Context,
     private val loopHub: LoopHub,
-    private val persistenceLayer: PersistenceLayer,
     private val rxBus: RxBus
 ) : PluginBaseWithPreferences(
     pluginDescription = PluginDescription()
@@ -268,7 +265,6 @@ class GarminPlugin @Inject constructor(
     }
 
     public override fun onStop() {
-        garminV2Push.flushDynamicAppRegistry()
         disposable.clear()
         aapsLogger.info(LTag.GARMIN, "Stop")
         resetGarminMessenger()
@@ -331,40 +327,20 @@ class GarminPlugin @Inject constructor(
         garminMessenger.sendMessage(garminV2Push.getGlucoseMessageV2(garminAapsKey), activeIds)
     }
 
-    private fun addTemporaryTarget(values: MutableMap<String, Any>) {
-        val temporaryTarget = loopHub.temporaryTarget
-        values["temporaryTargetActive"] = temporaryTarget != null
-        temporaryTarget?.let {
-            values["temporaryTargetLow"] = it.lowTarget.roundToInt()
-            values["temporaryTargetHigh"] = it.highTarget.roundToInt()
-            values["temporaryTargetReason"] = it.reason.text
-            values["temporaryTargetEndSec"] = it.end / 1000
-            values["temporaryTargetDurationMin"] = it.duration / 60000
-        }
-    }
-
     @VisibleForTesting
-    fun getGlucoseMessage(): Map<String, Any> {
-        val values = mutableMapOf<String, Any>(
-            "key" to garminAapsKey,
-            "command" to "glucose",
-            "encodedGlucose" to encodedGlucose(getGlucoseValues()),
-            "remainingInsulin" to loopHub.insulinOnboard,
-            "remainingBasalInsulin" to loopHub.insulinBasalOnboard,
-            "glucoseUnit" to glucoseUnitStr,
-            "temporaryBasalRate" to
-                (loopHub.temporaryBasal.takeIf { it.isFinite() } ?: 1.0),
-            "connected" to loopHub.isConnected,
-            "loopEnabled" to loopHub.isLoopEnabled,
-            "timestamp" to clock.instant().epochSecond,
-            // Re-added for backward compatibility: old watch faces and data fields
-            // that receive V1 CIQ pushes may read this field.
-            // Only the first letter of the profile name is sent (matches original AAPS).
-            "profile" to (loopHub.currentProfileName.firstOrNull()?.toString() ?: "")
-        )
-        addTemporaryTarget(values)
-        return values
-    }
+    fun getGlucoseMessage() = mapOf<String, Any>(
+        "key" to garminAapsKey,
+        "command" to "glucose",
+        "profile" to (loopHub.currentProfileName.firstOrNull()?.toString() ?: ""),
+        "encodedGlucose" to encodedGlucose(getGlucoseValues()),
+        "remainingInsulin" to loopHub.insulinOnboard,
+        "remainingBasalInsulin" to loopHub.insulinBasalOnboard,
+        "glucoseUnit" to glucoseUnitStr,
+        "temporaryBasalRate" to
+            (loopHub.temporaryBasal.takeIf(java.lang.Double::isFinite) ?: 1.0),
+        "connected" to loopHub.isConnected,
+        "timestamp" to clock.instant().epochSecond
+    )
 
     /** Gets the last 2+ hours of glucose values. */
     @VisibleForTesting
@@ -515,13 +491,7 @@ class GarminPlugin @Inject constructor(
         }
     }
 
-    private fun toLong(v: Any?): Long {
-        return when (v) {
-            is Number -> v.toLong()
-            is String -> v.toLongOrNull() ?: 0L
-            else -> 0L
-        }
-    }
+    private fun toLong(v: Any?) = (v as? Number?)?.toLong() ?: 0L
 
     @VisibleForTesting
     fun receiveHeartRate(msg: Map<String, Any>, test: Boolean) {

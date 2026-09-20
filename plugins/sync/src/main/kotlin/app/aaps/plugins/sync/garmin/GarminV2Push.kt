@@ -9,34 +9,9 @@ import com.google.gson.JsonObject
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * V2 push-to-pull support for GarminPlugin: dynamic app discovery (so a
- * third-party Connect IQ fork doesn't need to be on any hardcoded app-ID
- * list, unlike the V1 path below) and the push-rate throttle.
- *
- * Split out of GarminPlugin.kt purely to keep that file's size down - there
- * is no behavior change from having this inline there instead. GarminPlugin
- * still owns the actual GarminMessenger/HTTP server and calls into this
- * class for everything specific to the V2 discovery-and-push path. The V1 path
- * (glucoseAppIds, sendPhoneAppMessage(), getGlucoseMessage()) is unrelated
- * and stays in GarminPlugin.kt.
- *
- * V2 push is a latency optimization on top of the pull model, never a
- * replacement for it: getGlucoseMessageV2() below sends only a wake-up
- * ping, never the payload itself - the watch always re-fetches the full
- * dataset over HTTP (GarminPlugin.onGetBloodGlucose()).
- *
- * There is deliberately no keep-alive push (a periodic push to every app
- * seen in the last 24 h, regardless of whether it is still active). It
- * looks like it should be the way back in for a watch face that has fallen
- * out of PUSH_ACTIVE_WINDOW_MS, but the watch face already has three
- * faster ways back on its own: the view redraws once a minute and calls
- * BackgroundScheduler.schedule2(), the temporal event polls every 5 min,
- * and init2() polls ~2 s after any foreground start. Measured: switching
- * back to a watch face produced a /get in the same second, not five
- * minutes later. A keep-alive would therefore only ever push to app IDs
- * whose app is not running any more - with no way to notice, since Garmin
- * Connect Mobile answers SUCCESS for a dead app just as often as for a
- * live one.
+ * V2 push-to-pull: dynamic app discovery (a watch app registers itself by sending
+ * its appId on /get) and the push-rate throttle. The push is only a wake-up ping;
+ * the watch always fetches the data itself over HTTP (/get).
  */
 class GarminV2Push(
     private val aapsLogger: AAPSLogger,
@@ -48,7 +23,6 @@ class GarminV2Push(
         private const val PUSH_ACTIVE_WINDOW_MS = 30 * 60 * 1000L      // 30 min active push window
         private const val TTL_EVICTION_MS = 7 * 24 * 60 * 60 * 1000L   // 7 days full cleanup
         private const val MAX_REGISTERED_APPS = 5
-        private const val REGISTRY_SAVE_DEBOUNCE_MS = 5_000L
         private const val PREF_GARMIN_DYNAMIC_V2_APPS = "garmin_dynamic_v2_apps"
 
         /** Floor between two V2 pushes, unless a caller passes force=true. */
@@ -57,7 +31,6 @@ class GarminV2Push(
 
     private val appRegistryLock = Any()
     private var appRegistryCache: MutableMap<String, Long>? = null
-    private var lastRegistrySaveMs = 0L
 
     // There is deliberately no per-app failure counter, exclusion set or backoff
     // ladder here. The status Garmin Connect Mobile returns for a send only means
@@ -101,40 +74,22 @@ class GarminV2Push(
 
     /** Called on every `/get` that carries a well-formed `appId` parameter. */
     fun registerOrTouchDynamicApp(appId: String) {
-        val previousLastSeen: Long
         synchronized(appRegistryLock) {
             val registry = appRegistryCache
                 ?: loadRegisteredV2Apps().toMutableMap().also { appRegistryCache = it }
-
-            previousLastSeen = registry[appId] ?: 0L
             val now = nowMillis()
             registry[appId] = now
 
             // TTL eviction (7 days)
             val cutoff = now - TTL_EVICTION_MS
-            val evicted = mutableListOf<String>()
-            registry.entries.removeAll { entry ->
-                (entry.value < cutoff).also { if (it) evicted.add(entry.key) }
-            }
+            registry.entries.removeAll { entry -> entry.value < cutoff }
 
             // Quota eviction (max 5)
             while (registry.size > MAX_REGISTERED_APPS) {
-                registry.minByOrNull { it.value }?.key?.let {
-                    registry.remove(it)
-                    evicted.add(it)
-                }
+                registry.minByOrNull { it.value }?.key?.let { registry.remove(it) }
             }
 
-            if (previousLastSeen == 0L || now - lastRegistrySaveMs >= REGISTRY_SAVE_DEBOUNCE_MS) {
-                saveRegisteredV2Apps(registry)
-                lastRegistrySaveMs = now
-            }
-        }
-    }
-
-    fun flushDynamicAppRegistry() {
-        synchronized(appRegistryLock) {
-            appRegistryCache?.let { saveRegisteredV2Apps(it) }
+            saveRegisteredV2Apps(registry)
         }
     }
 

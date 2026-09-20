@@ -60,7 +60,6 @@ class GarminMessenger(
     private fun startDeviceClient() {
         synchronized(this) {
             if (disposed) return
-            activeDeviceClient?.dispose()
             activeDeviceClient = GarminDeviceClient(aapsLogger, context, this)
         }
     }
@@ -76,25 +75,15 @@ class GarminMessenger(
                 return
             }
         }
-        // Guard against duplicate entries: onServiceConnected can fire more than
-        // once if the getter's reconnect branch triggers a re-bind.
-        val isNew = clients.addIfAbsent(client)
-        if (isNew) {
-            if (clients.size == 1) {
-                connectionStateCallback(true)
-            }
-        }
+        clients.add(client)
+        if (clients.size == 1) connectionStateCallback(true)
     }
 
     override fun onDisconnect(client: GarminClient) {
         if (disposed) return
         aapsLogger.info(LTag.GARMIN, "onDisconnect ${client.name}")
-        val shouldRestart: Boolean
         synchronized(this) {
-            if (client == activeDeviceClient) {
-                activeDeviceClient = null
-            }
-            shouldRestart = !disposed && activeDeviceClient == null
+            if (client == activeDeviceClient) activeDeviceClient = null
         }
         clients.remove(client)
         synchronized (devices) {
@@ -107,7 +96,6 @@ class GarminMessenger(
         client.dispose()
         when (client) {
             is GarminDeviceClient -> {
-                if (!shouldRestart) return
                 // Start a new client after 5 s. Seen working: Garmin Connect force-stopped
                 // (2026-09-20) and its service restarted (2026-09-16, 2026-09-17) - back
                 // within 5 s each time.

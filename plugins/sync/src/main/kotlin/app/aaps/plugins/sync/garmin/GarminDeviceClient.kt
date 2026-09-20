@@ -22,7 +22,6 @@ import java.lang.Thread.UncaughtExceptionHandler
 import java.time.Instant
 import java.util.LinkedList
 import java.util.Queue
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -45,18 +44,6 @@ class GarminDeviceClient(
         }
     }
     private var bindLock = Object()
-    private var isBound = false
-    /**
-     * Returns the current ConnectIQ service binder, reconnecting if needed.
-     *
-     * WARNING: This property has significant side-effects — it is NOT a plain getter.
-     * If the binder is dead it will:
-     *   1. Set [state] = RECONNECTING and call [bindService] (starts an async bind).
-     *   2. Block the calling thread for up to 2 seconds waiting for [onServiceConnected].
-     *
-     * Call sites should be aware they may block. A future refactor could make this
-     * an explicit ensureConnected(): IConnectIQService? method to surface this at call sites.
-     */
     private var ciqService: IConnectIQService? = null
         get() {
             synchronized(bindLock) {
@@ -80,9 +67,7 @@ class GarminDeviceClient(
         }
 
     private val registeredActions = mutableSetOf<String>()
-    // CopyOnWriteArrayList: registerReceiver() adds under synchronized(registeredActions),
-    // onServiceDisconnected/dispose() iterate+clear from different threads. Safe for concurrent access.
-    private val broadcastReceiver = CopyOnWriteArrayList<BroadcastReceiver>()
+    private val broadcastReceiver = mutableListOf<BroadcastReceiver>()
     @Volatile private var state = State.DISCONNECTED
     private val serviceIntent
         get() = Intent(CONNECTIQ_SERVICE_ACTION).apply {
@@ -102,45 +87,28 @@ class GarminDeviceClient(
 
     private val ciqServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            var notifyReceiver: Boolean
+            val ciq: IConnectIQService
             synchronized(bindLock) {
                 aapsLogger.info(LTag.GARMIN, "ConnectIQ App connected")
-                val ciq = IConnectIQService.Stub.asInterface(service)
+                ciq = IConnectIQService.Stub.asInterface(service)
+                notifyReceiver = state != State.RECONNECTING
                 state = State.CONNECTED
                 ciqService = ciq
                 bindLock.notifyAll()
             }
-            // Always notify - previously suppressed when state==RECONNECTING (getter branch),
-            // causing the "send fresh data on reconnect" path to be silently skipped.
-            // GarminMessenger.onConnect now guards against duplicate client entries.
-            receiver.onConnect(this@GarminDeviceClient)
+            if (notifyReceiver) receiver.onConnect(this@GarminDeviceClient)
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             synchronized(bindLock) {
                 aapsLogger.info(LTag.GARMIN, "ConnectIQ App disconnected")
                 ciqService = null
-                isBound = false
                 if (state != State.DISPOSED) state = State.DISCONNECTED
             }
-            broadcastReceiver.forEach { br ->
-                try {
-                    context.unregisterReceiver(br)
-                } catch (e: IllegalArgumentException) {
-                    // Receiver already unregistered
-                }
-            }
+            broadcastReceiver.forEach { br -> context.unregisterReceiver(br) }
             broadcastReceiver.clear()
-            synchronized(registeredActions) {
-                registeredActions.clear()
-            }
-            val droppedMessages = mutableListOf<Message>()
-            synchronized(messageQueues) {
-                messageQueues.values.forEach { q -> droppedMessages.addAll(q) }
-                messageQueues.clear()
-            }
-            droppedMessages.forEach { msg ->
-                receiver.onSendMessage(this@GarminDeviceClient, msg.app.device.id, msg.app.id, "dropped: service disconnected")
-            }
+            registeredActions.clear()
             receiver.onDisconnect(this@GarminDeviceClient)
         }
     }
@@ -152,24 +120,8 @@ class GarminDeviceClient(
         bindService()
     }
 
-    /**
-     * Binds to the ConnectIQ service. No retry of its own: a failed bind shows up
-     * as a disconnect, and GarminMessenger then starts a new client. A bind retry
-     * with backoff was tried, but it never fired in any of the logs, so it was
-     * removed again.
-     */
     private fun bindService() {
-        val started = try {
-            context.bindService(serviceIntent, Context.BIND_AUTO_CREATE, executor, ciqServiceConnection)
-        } catch (e: Exception) {
-            aapsLogger.error(LTag.GARMIN, "bindService() threw", e)
-            false
-        }
-        if (started) {
-            synchronized(bindLock) { isBound = true }
-        } else {
-            aapsLogger.warn(LTag.GARMIN, "bindService() returned false")
-        }
+        context.bindService(serviceIntent, Context.BIND_AUTO_CREATE, executor, ciqServiceConnection)
     }
 
     override val connectedDevices: List<GarminDevice>
@@ -178,35 +130,18 @@ class GarminDeviceClient(
 
     override fun isDisposed() = state == State.DISPOSED
     override fun dispose() {
-        // Set DISPOSED first under bindLock, so a sendMessage() or no-answer check
-        // that runs at the same time sees it.
-        synchronized(bindLock) {
-            if (state == State.DISPOSED) return
-            state = State.DISPOSED
-            bindLock.notifyAll()
-            if (isBound) {
-                try {
-                    context.unbindService(ciqServiceConnection)
-                } catch (e: Exception) {
-                    aapsLogger.warn(LTag.GARMIN, "unbind CIQ failed ${e.message}")
-                }
-                isBound = false
-            }
-        }
+        // GarminMessenger can dispose the same client twice (once in onDisconnect and
+        // again in its own dispose). A second unregisterReceiver() would throw.
+        if (state == State.DISPOSED) return
+        state = State.DISPOSED
         executor.shutdown()
-        broadcastReceiver.forEach { br ->
-            try {
-                context.unregisterReceiver(br)
-            } catch (e: IllegalArgumentException) {
-                // Receiver already unregistered
-            }
-        }
+        broadcastReceiver.forEach { context.unregisterReceiver(it) }
         broadcastReceiver.clear()
-        synchronized(registeredActions) {
-            registeredActions.clear()
-        }
-        synchronized(messageQueues) {
-            messageQueues.clear()
+        registeredActions.clear()
+        try {
+            context.unbindService(ciqServiceConnection)
+        } catch (e: Exception) {
+            aapsLogger.warn(LTag.GARMIN, "unbind CIQ failed ${e.message}")
         }
     }
 
@@ -214,9 +149,7 @@ class GarminDeviceClient(
     private fun createAction(action: String) = "${javaClass.`package`!!.name}.$action"
 
     /** Registers a callback [BroadcastReceiver] under the given action that will
-     * be used by the ConnectIQ app for callbacks.
-     * RECEIVER_EXPORTED is required because broadcasts are sent by the external
-     * Garmin Connect Mobile app (a different package). */
+     * used by the ConnectIQ app for callbacks.*/
     private fun registerReceiver(action: String, receive: (intent: Intent) -> Unit) {
         val recv = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent) {
@@ -224,8 +157,8 @@ class GarminDeviceClient(
             }
         }
         broadcastReceiver.add(recv)
-        // Android 13+ requires an explicit exported/not-exported flag.
-        // These receivers must be exported because broadcasts come from Garmin Connect Mobile.
+        // Must be exported: the broadcasts come from Garmin Connect Mobile (another app).
+        // Android 13+ requires the flag to be given explicitly.
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             context.registerReceiver(recv, IntentFilter(action), Context.RECEIVER_EXPORTED)
         } else {
@@ -284,8 +217,6 @@ class GarminDeviceClient(
                             val delaySec = retryWaitFactor * msg.attempt
                             Schedulers.io().scheduleDirect({ retryMessage(deviceId, appId) }, delaySec, TimeUnit.SECONDS)
                             return
-                        } else {
-                            errorMessage = "max retries reached: $status"
                         }
                     }
 
@@ -294,9 +225,6 @@ class GarminDeviceClient(
                     }
                 }
                 queue.poll()
-                if (queue.isEmpty()) {
-                    messageQueues.remove(deviceId to appId)
-                }
                 receiver.onSendMessage(this, msg.app.device.id, msg.app.id, errorMessage)
                 if (queue.isNotEmpty()) {
                     Schedulers.io().scheduleDirect { retryMessage(deviceId, appId) }
@@ -329,7 +257,6 @@ class GarminDeviceClient(
     private val messageQueues = mutableMapOf<Pair<Long, String>, Queue<Message>>()
 
     override fun sendMessage(app: GarminApplication, data: ByteArray) {
-        val droppedOldMsgs = mutableListOf<Message>()
         val msg = synchronized(messageQueues) {
             val msg = Message(app, data)
             val oldMessageCutOff = Instant.now().minusSeconds(30)
@@ -338,7 +265,7 @@ class GarminDeviceClient(
                 val oldMsg = queue.peek() ?: break
                 if ((oldMsg.lastAttempt ?: oldMsg.creation).isBefore(oldMessageCutOff)) {
                     aapsLogger.warn(LTag.GARMIN, "remove old msg ${msg.app}")
-                    queue.poll()?.let { droppedOldMsgs.add(it) }
+                    queue.poll()
                 } else {
                     break
                 }
@@ -347,9 +274,6 @@ class GarminDeviceClient(
             // Make sure we have only one outstanding message per app, so we ensure
             // that always the first message in the queue is currently send.
             if (queue.size == 1) msg else null
-        }
-        droppedOldMsgs.forEach { oldMsg ->
-            receiver.onSendMessage(this, oldMsg.app.device.id, oldMsg.app.id, "dropped: 30s timeout")
         }
         if (msg != null) sendMessage(msg)
     }
@@ -367,27 +291,11 @@ class GarminDeviceClient(
         val iqMsg = IQMessage(msg.data, context.packageName, sendMessageAction)
         val service = ciqService
         if (service == null) {
-            // ciqService unavailable - the getter already attempted reconnect and waited 2s.
-            // Previously this was a silent no-op with no log and no retry.
-            // Now: log explicitly and schedule a retry like FAILURE_DEVICE_NOT_CONNECTED.
-            aapsLogger.warn(LTag.GARMIN, "sendMessage: ciqService unavailable for ${msg.app} (attempt ${msg.attempt})")
-            if (msg.attempt < MAX_RETRIES) {
-                val delaySec = retryWaitFactor * msg.attempt
-                Schedulers.io().scheduleDirect({ retryMessage(msg.app.device.id, msg.app.id) }, delaySec, TimeUnit.SECONDS)
-            } else {
-                aapsLogger.warn(LTag.GARMIN, "sendMessage: max retries reached for ${msg.app}, dropping message")
-                synchronized(messageQueues) {
-                    val q = messageQueues[msg.app.device.id to msg.app.id]
-                    q?.poll()
-                    if (q?.isEmpty() == true) {
-                        messageQueues.remove(msg.app.device.id to msg.app.id)
-                    }
-                }
-                receiver.onSendMessage(this, msg.app.device.id, msg.app.id, "ciqService unavailable after ${msg.attempt} attempts")
-            }
-            return
+            aapsLogger.warn(LTag.GARMIN, "sendMessage: no ConnectIQ service for ${msg.app}")
+        } else {
+            service.sendMessage(iqMsg, msg.iqDevice, msg.iqApp)
         }
-        service.sendMessage(iqMsg, msg.iqDevice, msg.iqApp)
+        // Also when there was no service: onNoAnswer() then sends it once more.
         val sentAttempt = msg.attempt
         Schedulers.io().scheduleDirect({ onNoAnswer(msg, sentAttempt) }, NO_ANSWER_TIMEOUT_SEC, TimeUnit.SECONDS)
     }
