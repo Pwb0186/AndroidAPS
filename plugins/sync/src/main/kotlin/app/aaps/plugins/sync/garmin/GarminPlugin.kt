@@ -222,6 +222,8 @@ class GarminPlugin @Inject constructor(
         // SMB both logs a treatment and adjusts the temp basal), which would
         // otherwise trigger several near-identical sendPhoneAppMessageV2() calls
         // in a row for no benefit.
+        // The debounce is longer than GarminV2Push.MIN_PUSH_INTERVAL_MS (3 s), so a loop
+        // result that arrives right after a new BG is not throttled away by the BG push.
         disposable.add(
             Observable.merge(
                 listOf(
@@ -231,7 +233,7 @@ class GarminPlugin @Inject constructor(
                     rxBus.toObservable(EventRunningModeChange::class.java)
                 )
             )
-                .debounce(2, TimeUnit.SECONDS)
+                .debounce(3500, TimeUnit.MILLISECONDS)
                 .observeOn(Schedulers.io())
                 .subscribe { sendPhoneAppMessageV2() }
         )
