@@ -427,7 +427,11 @@ class GarminPlugin @Inject constructor(
         jo.addProperty("encodedGlucose", encodedGlucose(glucoseValues))
         jo.addProperty("remainingInsulin", loopHub.insulinOnboard)
         jo.addProperty("remainingBasalInsulin", loopHub.insulinBasalOnboard)
-        jo.addProperty("carbsOnBoard", loopHub.carbsOnboard ?: 0.0)
+        // Left out while AAPS has no COB (displayCob is null while it recalculates right
+        // after a treatment change - which is exactly when a push arrives). Sending 0.0
+        // then made the watch show 0 g for one update; without the field the watch
+        // keeps the last value.
+        loopHub.carbsOnboard?.let { jo.addProperty("carbsOnBoard", it) }
         loopHub.lowGlucoseMark.takeIf { it > 0.0 }?.let {
             jo.addProperty("lowGlucoseMark", it.roundToInt())
         }
