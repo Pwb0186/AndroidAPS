@@ -20,7 +20,13 @@ class GarminV2Push(
 ) {
     companion object {
         private val APP_ID_REGEX = Regex("^[0-9A-Fa-f]{32}$")
-        private const val PUSH_ACTIVE_WINDOW_MS = 30 * 60 * 1000L      // 30 min active push window
+        // Only one watch face runs at a time, and the watch keeps every push sent to a
+        // face that is not running until that face is started again (seen on the
+        // FR955: 6 messages waiting after a switch). 15 min is longer than the widest
+        // gap between two pulls of the running face (about 10 min on the temporal
+        // event alone), so it never drops out, while a face the user switched away
+        // from gets 3-4 pushes instead of about 10.
+        private const val PUSH_ACTIVE_WINDOW_MS = 15 * 60 * 1000L
         private const val TTL_EVICTION_MS = 7 * 24 * 60 * 60 * 1000L   // 7 days full cleanup
         private const val MAX_REGISTERED_APPS = 5
         private const val PREF_GARMIN_DYNAMIC_V2_APPS = "garmin_dynamic_v2_apps"
