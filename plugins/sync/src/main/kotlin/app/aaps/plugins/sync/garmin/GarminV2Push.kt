@@ -28,7 +28,14 @@ class GarminV2Push(
         // from gets 3-4 pushes instead of about 10.
         private const val PUSH_ACTIVE_WINDOW_MS = 15 * 60 * 1000L
         private const val TTL_EVICTION_MS = 7 * 24 * 60 * 60 * 1000L   // 7 days full cleanup
-        private const val MAX_REGISTERED_APPS = 5
+        // Upper bound on the registry, only there so a stream of bogus appIds can't
+        // grow it without limit. Not what decides who gets a push - that is
+        // PUSH_ACTIVE_WINDOW_MS - so it should sit well above the number of watch
+        // apps actually installed. At 5 it did not: with 6 watch faces the one used
+        // least recently was evicted, and after switching back to it (2026-09-23,
+        // log "6 ur") it got no push until its next own poll, up to 5 min later.
+        // An entry is ~70 bytes of JSON in SharedPreferences.
+        private const val MAX_REGISTERED_APPS = 10
         private const val PREF_GARMIN_DYNAMIC_V2_APPS = "garmin_dynamic_v2_apps"
 
         /** Floor between two V2 pushes, unless a caller passes force=true. */
@@ -90,7 +97,7 @@ class GarminV2Push(
             val cutoff = now - TTL_EVICTION_MS
             registry.entries.removeAll { entry -> entry.value < cutoff }
 
-            // Quota eviction (max 5)
+            // Quota eviction (max MAX_REGISTERED_APPS)
             while (registry.size > MAX_REGISTERED_APPS) {
                 registry.minByOrNull { it.value }?.key?.let { registry.remove(it) }
             }
