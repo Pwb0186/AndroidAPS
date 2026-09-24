@@ -15,6 +15,7 @@ import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.sharedPreferences.SP
 import app.aaps.core.interfaces.rx.bus.RxBus
+import app.aaps.core.interfaces.rx.events.EventAutosensCalculationFinished
 import app.aaps.core.interfaces.rx.events.EventNewBG
 import app.aaps.core.interfaces.rx.events.EventPreferenceChange
 import app.aaps.core.interfaces.rx.events.EventRunningModeChange
@@ -34,6 +35,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.disposables.CompositeDisposable
+import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.schedulers.Schedulers
 import java.math.BigDecimal
 import java.math.MathContext
@@ -49,6 +51,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.Date
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.Condition
 import java.util.concurrent.locks.ReentrantLock
 import javax.inject.Inject
@@ -107,6 +111,11 @@ class GarminPlugin @Inject constructor(
         // activity spike. Beyond this gap only the baseline is moved. Same limit
         // as the midnight-rollover branch already used.
         private const val MAX_STEPS_GAP_MS = 12 * 60 * 1000L
+
+        // Longest a loop push waits for AAPS to finish recalculating IOB/COB
+        // (see onLoopDataChanged). The calculation normally takes a few seconds.
+        @VisibleForTesting
+        const val LOOP_PUSH_MAX_WAIT_SEC = 15L
     }
 
     // Lock for thread-safe step ingestion against race conditions from HttpServer thread pool
@@ -235,7 +244,16 @@ class GarminPlugin @Inject constructor(
             )
                 .debounce(3500, TimeUnit.MILLISECONDS)
                 .observeOn(Schedulers.io())
-                .subscribe { sendPhoneAppMessageV2() }
+                .subscribe { onLoopDataChanged() }
+        )
+        // End of an IOB/COB calculation - releases a loop push that is waiting for
+        // COB (onLoopDataChanged). Sent after every calculation, whether or not the
+        // Autosens feature is used; the name refers to AAPS's AutosensData table.
+        disposable.add(
+            rxBus
+                .toObservable(EventAutosensCalculationFinished::class.java)
+                .observeOn(Schedulers.io())
+                .subscribe { onCalculationFinished() }
         )
         setupHttpServer()
         setupGarminMessenger()
@@ -268,6 +286,8 @@ class GarminPlugin @Inject constructor(
 
     public override fun onStop() {
         disposable.clear()
+        loopPushPending.set(false)
+        loopPushTimeout.getAndSet(null)?.dispose()
         aapsLogger.info(LTag.GARMIN, "Stop")
         resetGarminMessenger()
         server?.close()
@@ -297,6 +317,57 @@ class GarminPlugin @Inject constructor(
             aapsLogger.info(LTag.GARMIN, "onNewBloodGlucose ${Date(timestamp)}")
             sendPhoneAppMessageV2(force = true)
         }
+    }
+
+    /** A loop push is waiting for the IOB/COB calculation (onLoopDataChanged). */
+    private val loopPushPending = AtomicBoolean(false)
+    private val loopPushTimeout = AtomicReference<Disposable?>(null)
+
+    /** Treatment, temp target, temp basal or running mode changed (debounced).
+     *
+     * Each of these makes AAPS recalculate IOB/COB, and while it does, COB is not
+     * available (displayCob == null) - so a push sent now makes the watch fetch
+     * data without COB, and the watch keeps its old COB until the next BG push, up
+     * to 5 min later. Log 2026-09-23/24: 140 of 270 loop pushes (52 %) were answered
+     * without COB, against 4 of 397 BG pushes. Most noticeable right after carbs
+     * were entered.
+     *
+     * So the push waits for EventAutosensCalculationFinished when COB is missing,
+     * at most LOOP_PUSH_MAX_WAIT_SEC. Same number of pushes as before, only a few
+     * seconds later when needed, and with the fresh COB.
+     */
+    @VisibleForTesting
+    fun onLoopDataChanged() {
+        if (loopHub.carbsOnboard != null) {
+            sendPhoneAppMessageV2()
+            return
+        }
+        if (!loopPushPending.compareAndSet(false, true)) return  // already waiting
+        aapsLogger.info(LTag.GARMIN, "loop push waits for IOB/COB calculation")
+        val timeout = Schedulers.io().scheduleDirect(
+            { releaseLoopPush("timeout") }, LOOP_PUSH_MAX_WAIT_SEC, TimeUnit.SECONDS
+        )
+        loopPushTimeout.getAndSet(timeout)?.dispose()
+    }
+
+    /** IOB/COB calculation finished: send a waiting loop push once COB is there.
+     *  If it is still missing (another recalculation already started), keep
+     *  waiting - for the next finished calculation or the timeout. */
+    @VisibleForTesting
+    fun onCalculationFinished() {
+        if (loopPushPending.get() && loopHub.carbsOnboard != null) {
+            releaseLoopPush("calculation finished")
+        }
+    }
+
+    private fun releaseLoopPush(reason: String) {
+        if (!loopPushPending.compareAndSet(true, false)) return
+        loopPushTimeout.getAndSet(null)?.dispose()
+        aapsLogger.info(
+            LTag.GARMIN,
+            "loop push after $reason (cob ${if (loopHub.carbsOnboard != null) "ok" else "missing"})"
+        )
+        sendPhoneAppMessageV2()
     }
 
     @VisibleForTesting
