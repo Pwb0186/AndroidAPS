@@ -287,6 +287,7 @@ class GarminPlugin @Inject constructor(
     public override fun onStop() {
         disposable.clear()
         loopPushPending.set(false)
+        loopPushSendOnTimeout.set(true)
         loopPushTimeout.getAndSet(null)?.dispose()
         aapsLogger.info(LTag.GARMIN, "Stop")
         resetGarminMessenger()
@@ -321,6 +322,8 @@ class GarminPlugin @Inject constructor(
 
     /** A loop push is waiting for the IOB/COB calculation (onLoopDataChanged). */
     private val loopPushPending = AtomicBoolean(false)
+    /** False while only a /get without COB is waiting (see waitForCob). */
+    private val loopPushSendOnTimeout = AtomicBoolean(true)
     private val loopPushTimeout = AtomicReference<Disposable?>(null)
 
     /** Treatment, temp target, temp basal or running mode changed (debounced).
@@ -342,8 +345,19 @@ class GarminPlugin @Inject constructor(
             sendPhoneAppMessageV2()
             return
         }
+        waitForCob("loop push", sendOnTimeout = true)
+    }
+
+    /** Arms a push that goes out when the IOB/COB calculation has finished and COB
+     *  is there again (onCalculationFinished), or after LOOP_PUSH_MAX_WAIT_SEC.
+     *  With sendOnTimeout = false the timeout only sends if COB has come back -
+     *  used after a /get without COB, so a COB that stays missing can't make it
+     *  push every 15 s. */
+    private fun waitForCob(what: String, sendOnTimeout: Boolean) {
+        if (sendOnTimeout) loopPushSendOnTimeout.set(true)
         if (!loopPushPending.compareAndSet(false, true)) return  // already waiting
-        aapsLogger.info(LTag.GARMIN, "loop push waits for IOB/COB calculation")
+        if (!sendOnTimeout) loopPushSendOnTimeout.set(false)
+        aapsLogger.info(LTag.GARMIN, "$what waits for IOB/COB calculation")
         val timeout = Schedulers.io().scheduleDirect(
             { releaseLoopPush("timeout") }, LOOP_PUSH_MAX_WAIT_SEC, TimeUnit.SECONDS
         )
@@ -363,11 +377,17 @@ class GarminPlugin @Inject constructor(
     private fun releaseLoopPush(reason: String) {
         if (!loopPushPending.compareAndSet(true, false)) return
         loopPushTimeout.getAndSet(null)?.dispose()
+        if (loopHub.carbsOnboard == null && !loopPushSendOnTimeout.get()) {
+            aapsLogger.info(LTag.GARMIN, "cob re-push dropped after $reason (cob still missing)")
+            return
+        }
         aapsLogger.info(
             LTag.GARMIN,
             "loop push after $reason (cob ${if (loopHub.carbsOnboard != null) "ok" else "missing"})"
         )
-        sendPhoneAppMessageV2()
+        // force: a re-push can come < MIN_PUSH_INTERVAL_MS after the push it corrects
+        // and must not be throttled away. At most one per wait, so no flood.
+        sendPhoneAppMessageV2(force = true)
     }
 
     @VisibleForTesting
@@ -483,10 +503,12 @@ class GarminPlugin @Inject constructor(
         receiveSteps(uri)
 
         val rawAppId = getQueryParameter(uri, "appId")
+        var isV2App = false
         if (!rawAppId.isNullOrEmpty()) {
             val appId = rawAppId.uppercase()
             if (garminV2Push.matchesAppIdFormat(appId)) {
                 garminV2Push.registerOrTouchDynamicApp(appId)
+                isV2App = true
             } else {
                 aapsLogger.debug(LTag.GARMIN, "Ignoring malformed appId: $rawAppId")
             }
@@ -502,7 +524,17 @@ class GarminPlugin @Inject constructor(
         // after a treatment change - which is exactly when a push arrives). Sending 0.0
         // then made the watch show 0 g for one update; without the field the watch
         // keeps the last value.
-        loopHub.carbsOnboard?.let { jo.addProperty("carbsOnBoard", it) }
+        //
+        // A push can still race the recalculation: COB is there when the loop push
+        // goes out, the recalculation starts right after, and the watch's /get 1-2 s
+        // later finds none (log 2026-09-24/25: 58 of 143 direct loop pushes). So when
+        // a push app is served without COB, push again once COB is back.
+        val cob = loopHub.carbsOnboard
+        if (cob != null) {
+            jo.addProperty("carbsOnBoard", cob)
+        } else if (isV2App) {
+            waitForCob("cob re-push", sendOnTimeout = false)
+        }
         loopHub.lowGlucoseMark.takeIf { it > 0.0 }?.let {
             jo.addProperty("lowGlucoseMark", it.roundToInt())
         }
