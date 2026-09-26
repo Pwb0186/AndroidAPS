@@ -312,37 +312,36 @@ class GarminPlugin(
 
     /** A loop push is waiting for the IOB/COB calculation (onLoopDataChanged). */
     private val loopPushPending = AtomicBoolean(false)
-    /** When the last IOB/COB calculation finished (EventAutosensCalculationFinished). */
-    private val lastCalcFinishedAt = AtomicLong(0)
-    /** When the current wait started, for the log. */
-    private val loopPushWaitStart = AtomicLong(0)
     /** False while only a /get without COB is waiting (see waitForCob). */
     private val loopPushSendOnTimeout = AtomicBoolean(true)
+    /** When the current wait started, for the log. */
+    private val loopPushWaitStart = AtomicLong(0)
     private val loopPushTimeout = AtomicReference<Job?>(null)
 
     /** Treatment, carbs, temp target, temp basal or running mode changed (debounced).
      *
-     * What the watch wants per 5 min cycle is two pushes: the new BG right away
-     * (onNewBloodGlucose), and - if the loop changed something - the result once it
-     * is complete. After new BG, AAPS recalculates IOB/COB, the loop runs on that,
-     * sets TBR/SMB on the pump (~20 s after BG), and the TBR/SMB makes AAPS
-     * recalculate IOB/COB once more; only after that are TBR, IOB and COB all fresh.
-     * While it recalculates, COB is null.
+     * Each of these makes AAPS recalculate IOB/COB, and while it does, COB is not
+     * available (displayCob == null) - so a push sent now makes the watch fetch
+     * data without COB, and the watch keeps its old COB until the next BG push, up
+     * to 5 min later. Log 2026-09-23/24 (V5): 140 of 270 loop pushes (52 %) were
+     * answered without COB, against 4 of 397 BG pushes. Most noticeable right after
+     * carbs were entered.
      *
-     * So a loop push waits for the end of that last calculation
-     * (EventAutosensCalculationFinished), at most LOOP_PUSH_MAX_WAIT_MS. Pushing as soon as COB
-     * happened to be there was not enough: the recalculation often started just after,
-     * and the watch fetched 1-2 s later without COB (log 2026-09-24/25: 58 of 143).
-     *
-     * Exception: if a calculation already finished inside the debounce window, the
-     * recalculation after this change is done and COB is there - push now.
+     * So the push waits for EventAutosensCalculationFinished when COB is missing,
+     * at most LOOP_PUSH_MAX_WAIT_MS. Same number of pushes as before, only a few
+     * seconds later when needed, and with the fresh COB. Same logic as V5.
      */
+    // Tried 2026-09-25/26: always waiting for the calculation (max 2 pushes per BG).
+    // Log 26/9: 18 of 57 loop pushes then reached the watch 25 s - 3.6 min late -
+    // with the screen off the phone sleeps, and both AAPS's recalculation and the
+    // LOOP_PUSH_MAX_WAIT_MS timer wait for it to wake up. So the loop push goes out at once when
+    // COB is there (TBR on the watch within seconds), and the /get without COB
+    // that can follow is fixed by the re-push in onGetBloodGlucose (waitForCob).
     @VisibleForTesting
     fun onLoopDataChanged() {
-        val sinceCalc = clock.millis() - lastCalcFinishedAt.get()
-        if (loopHub.carbsOnboard != null && sinceCalc < PUSH_TRIGGER_DEBOUNCE_MS) {
-            aapsLogger.info(LTag.GARMIN, "loop push now (calculation finished ${sinceCalc} ms ago)")
-            sendPhoneAppMessageV2(force = true)
+        if (loopHub.carbsOnboard != null) {
+            aapsLogger.info(LTag.GARMIN, "loop push now (cob ok)")
+            sendPhoneAppMessageV2()
             return
         }
         waitForCob("loop push", sendOnTimeout = true)
@@ -371,7 +370,6 @@ class GarminPlugin(
      *  waiting - for the next finished calculation or the timeout. */
     @VisibleForTesting
     fun onCalculationFinished() {
-        lastCalcFinishedAt.set(clock.millis())
         if (loopPushPending.get() && loopHub.carbsOnboard != null) {
             releaseLoopPush("calculation finished")
         }
@@ -381,7 +379,7 @@ class GarminPlugin(
         if (!loopPushPending.compareAndSet(true, false)) return
         loopPushTimeout.getAndSet(null)?.cancel()
         if (loopHub.carbsOnboard == null && !loopPushSendOnTimeout.get()) {
-            aapsLogger.info(LTag.GARMIN, "cob re-push dropped after $reason (cob still missing)")
+            aapsLogger.info(LTag.GARMIN, "cob re-push dropped after $reason, waited ${clock.millis() - loopPushWaitStart.get()} ms (cob still missing)")
             return
         }
         aapsLogger.info(
