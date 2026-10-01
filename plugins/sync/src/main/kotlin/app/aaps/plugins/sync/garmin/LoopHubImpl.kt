@@ -5,6 +5,7 @@ import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.HR
 import app.aaps.core.data.model.RM
+import app.aaps.core.data.model.SC
 import app.aaps.core.data.model.TE
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
@@ -82,6 +83,10 @@ class LoopHubImpl @Inject constructor(
     /** Returns true if the pump is connected. */
     override val isConnected: Boolean get() = loop.runningMode != RM.Mode.DISCONNECTED_PUMP
 
+    /** Returns true if the loop is enabled and actually running. */
+    override val isLoopEnabled: Boolean
+        get() = loop.isEnabled() && loop.runningMode.isLoopRunning()
+
     /** Returns true if the current profile is set of a limited amount of time. */
     override val isTemporaryProfile: Boolean
         get() {
@@ -107,6 +112,9 @@ class LoopHubImpl @Inject constructor(
         get() = profileUtil.convertToMgdl(
             preferences.get(UnitDoubleKey.OverviewHighMark), glucoseUnit
         )
+
+    override val temporaryTarget
+        get() = persistenceLayer.getTemporaryTargetActiveAt(clock.millis())
 
     /** Tells the loop algorithm that the pump is physically connected. */
     override fun connectPump() {
@@ -154,6 +162,7 @@ class LoopHubImpl @Inject constructor(
     }
 
     /** Stores hear rate readings that a taken and averaged of the given interval. */
+    @Suppress("CheckResult")
     override fun storeHeartRate(
         samplingStart: Instant, samplingEnd: Instant,
         avgHeartRate: Int,
@@ -166,6 +175,58 @@ class LoopHubImpl @Inject constructor(
             beatsPerMinute = avgHeartRate.toDouble(),
             device = device ?: "Garmin",
         )
-        disposable += persistenceLayer.insertOrUpdateHeartRate(hr).subscribe()
+        // Not added to [disposable]: nothing ever clears it, so every insert (about
+        // 290 a day for HR) stayed referenced for as long as AAPS ran. The insert is a
+        // one-shot Single that finishes on its own; there is nothing to cancel.
+        persistenceLayer.insertOrUpdateHeartRate(hr).subscribe(
+            { },
+            { error -> aapsLogger.error(LTag.GARMIN, "Failed to store heart rate: ${error.message}") }
+        )
+    }
+
+    /**
+     * Stores step counts into the AAPS StepsCount table.
+     * Adapted from MTR (AIMI) and Swissalpine Garmin integration.
+     */
+    @Suppress("CheckResult")
+    override fun storeStepsCount(
+        samplingStart: Instant,
+        samplingEnd: Instant,
+        steps5min: Int,
+        steps10min: Int,
+        steps15min: Int,
+        steps30min: Int,
+        steps60min: Int,
+        steps180min: Int,
+        device: String?
+    ) {
+        val sc = SC(
+            duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
+            timestamp = samplingEnd.toEpochMilli(),
+            steps5min = steps5min,
+            steps10min = steps10min,
+            steps15min = steps15min,
+            steps30min = steps30min,
+            steps60min = steps60min,
+            steps180min = steps180min,
+            device = device ?: "Garmin",
+            dateCreated = clock.millis(),
+        )
+        // Not added to [disposable] - see storeHeartRate().
+        persistenceLayer.insertOrUpdateStepsCount(sc).subscribe(
+            { result ->
+                val id = result.inserted.firstOrNull()?.id ?: result.updated.firstOrNull()?.id
+                aapsLogger.debug(
+                    LTag.GARMIN,
+                    "Steps stored in DB: ID=$id, 5min=$steps5min, end=$samplingEnd"
+                )
+            },
+            { error ->
+                aapsLogger.error(
+                    LTag.GARMIN,
+                    "❌ Failed to store steps: ${error.message}"
+                )
+            }
+        )
     }
 }
