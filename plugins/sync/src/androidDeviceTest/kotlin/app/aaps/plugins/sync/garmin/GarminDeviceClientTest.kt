@@ -25,6 +25,7 @@ import org.mockito.kotlin.argThat
 import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.timeout
@@ -333,5 +334,81 @@ class GarminDeviceClientTest : TestBase() {
             eq(app.device.id),
             eq(app.id),
             argThat { payload -> "foo" == String(payload) })
+    }
+
+    private fun verifySent(data: ByteArray, appId: String, mode: org.mockito.verification.VerificationMode = times(1)) {
+        verify(ciqService, mode).sendMessage(
+            argThat { iqMsg ->
+                data.contentEquals(iqMsg.messageData)
+                    && iqMsg.notificationPackage == packageName
+                    && iqMsg.notificationAction == client.sendMessageAction
+            },
+            argThat { iqDevice -> iqDevice.deviceIdentifier == device.id },
+            argThat { iqApp -> iqApp?.applicationId == appId })
+    }
+
+    private fun successIntent(appId: String) = Intent().apply {
+        putExtra(GarminDeviceClient.EXTRA_STATUS, ConnectIQ.IQMessageStatus.SUCCESS.ordinal)
+        putExtra(GarminDeviceClient.EXTRA_REMOTE_DEVICE, device.toIQDevice())
+        putExtra(GarminDeviceClient.EXTRA_APPLICATION_ID, appId)
+    }
+
+    @Test
+    fun connectedDevices_serviceThrows() {
+        // Garmin Connect can throw while it is updated or restarted - no devices then,
+        // not an exception (the caller may be a broadcast receiver on the main thread).
+        whenever(ciqService.connectedDevices).thenThrow(IllegalStateException("gcm restarting"))
+        assertEquals(emptyList<GarminDevice>(), client.connectedDevices)
+    }
+
+    @Test
+    fun sendMessage_serviceThrows() {
+        doThrow(IllegalStateException("gcm restarting")).whenever(ciqService).sendMessage(any(), any(), any())
+        // Must not throw.
+        client.sendMessage(GarminApplication(device, "APPID1", "APPID1-name"), "m1".toByteArray())
+    }
+
+    @Test
+    fun disposeTwice() {
+        // GarminMessenger can dispose a client twice (onDisconnect and its own dispose).
+        // A second unregisterReceiver()/unbindService() would throw on a real device.
+        client.dispose()
+        client.dispose()
+        // shutdown() disposes a third time and checks unbindService was called once.
+    }
+
+    // The two tests below wait for the 20 s no-answer timeout (NO_ANSWER_TIMEOUT_SEC).
+
+    @Test
+    fun noAnswer_resendOnce() {
+        val appId = "APPID1"
+        val data = "m1".toByteArray()
+        client.sendMessage(GarminApplication(device, appId, "$appId-name"), data)
+        verifySent(data, appId)
+
+        // No answer from Garmin Connect: sent once more after 20 s ...
+        verifySent(data, appId, timeout(25_000L).times(2))
+
+        // ... and the answer to that one completes it.
+        actions[client.sendMessageAction]!!.onReceive(context, successIntent(appId))
+        verify(receiver).onSendMessage(client, device.id, appId, null)
+    }
+
+    @Test
+    fun noAnswer_newerMessageWaiting() {
+        val appId = "APPID1"
+        val data1 = "m1".toByteArray()
+        val data2 = "m2".toByteArray()
+        client.sendMessage(GarminApplication(device, appId, "$appId-name"), data1)
+        client.sendMessage(GarminApplication(device, appId, "$appId-name"), data2)
+        verifySent(data1, appId)
+
+        // No answer for m1: it is dropped and the waiting m2 is sent at once.
+        verify(receiver, timeout(25_000L)).onSendMessage(client, device.id, appId, "dropped: no answer")
+        verifySent(data2, appId, timeout(5_000L))
+        verifySent(data1, appId)  // m1 was not sent again
+
+        actions[client.sendMessageAction]!!.onReceive(context, successIntent(appId))
+        verify(receiver).onSendMessage(client, device.id, appId, null)
     }
 }
