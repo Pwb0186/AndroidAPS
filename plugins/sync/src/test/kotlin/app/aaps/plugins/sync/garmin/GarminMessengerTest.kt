@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.stub
 import org.mockito.kotlin.verify
@@ -109,5 +110,50 @@ class GarminMessengerTest : TestBase() {
         assertEquals(listOf("foo"), GarminSerializer.deserialize(msg21))
         assertEquals(listOf("foo"), GarminSerializer.deserialize(msg22))
         messenger.onSendMessage(client1, device1.id, appId1, null)
+    }
+
+    @Test
+    fun sendMessageToTargetApps() {
+        // V2: only the given app ids get the message, on every connected device.
+        val target = "0123456789ABCDEF0123456789ABCDEF"
+        messenger.sendMessage(mapOf("command" to "updateWatch"), setOf(target))
+        assertEquals(2, outMessages.size)
+        outMessages.forEach { (app, payload) ->
+            assertEquals(target, app.id)
+            assertEquals(mapOf("command" to "updateWatch"), GarminSerializer.deserialize(payload))
+        }
+        assertEquals(setOf(device1, device2), outMessages.map { (app, _) -> app.device }.toSet())
+    }
+
+    @Test
+    fun sendMessageToNoTargetApps() {
+        messenger.sendMessage(mapOf("command" to "updateWatch"), emptySet())
+        assertEquals(0, outMessages.size)
+    }
+
+    @Test
+    fun sendMessage_ConnectedDevicesThrows() {
+        // Garmin Connect can throw while it is updated or restarted. The other
+        // client's devices must still get the message.
+        client1.stub { on { connectedDevices } doThrow IllegalStateException("gcm restarting") }
+        messenger.sendMessage(mapOf("command" to "updateWatch"), setOf(appId1))
+        assertEquals(1, outMessages.size)
+        assertEquals(device2, outMessages.first().first.device)
+    }
+
+    @Test
+    fun connectionStateCallback() {
+        val states = mutableListOf<Boolean>()
+        val m = GarminMessenger(
+            aapsLogger, context, apps, { _, _ -> },
+            enableConnectIq = false, enableSimulator = false,
+            connectionStateCallback = { connected -> states.add(connected) }
+        )
+        val c = mock<GarminClient> { on { name } doReturn "Mock3" }
+        m.onConnect(c)
+        m.onDisconnect(c)
+        assertEquals(listOf(true, false), states)
+        verify(c).dispose()
+        m.dispose()
     }
 }

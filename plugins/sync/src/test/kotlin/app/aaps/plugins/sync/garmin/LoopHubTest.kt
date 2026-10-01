@@ -7,6 +7,7 @@ import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.HR
 import app.aaps.core.data.model.ICfg
 import app.aaps.core.data.model.RM
+import app.aaps.core.data.model.SC
 import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TB
 import app.aaps.core.data.model.TE
@@ -35,6 +36,8 @@ import io.reactivex.rxjava3.core.Single
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -319,6 +322,73 @@ class LoopHubTest : TestBase() {
         loopHub.storeHeartRate(
             samplingStart, samplingEnd, 101, "Test Device"
         )
+        verify(persistenceLayer).insertOrUpdateHeartRate(hr)
+    }
+
+    @Test
+    fun testIsLoopEnabled() {
+        whenever(loop.isEnabled()).thenReturn(true)
+        whenever(loop.runningMode).thenReturn(RM.Mode.CLOSED_LOOP)
+        assertEquals(true, loopHub.isLoopEnabled)
+        verify(loop).isEnabled()
+        verify(loop).runningMode
+    }
+
+    @Test
+    fun testIsLoopEnabled_PluginDisabled() {
+        whenever(loop.isEnabled()).thenReturn(false)
+        assertFalse(loopHub.isLoopEnabled)
+        verify(loop).isEnabled()
+    }
+
+    @Test
+    fun testTemporaryTargetNone() {
+        whenever(persistenceLayer.getTemporaryTargetActiveAt(clock.millis())).thenReturn(null)
+        assertNull(loopHub.temporaryTarget)
+        verify(persistenceLayer).getTemporaryTargetActiveAt(clock.millis())
+    }
+
+    @Test
+    fun testStoreStepsCount() {
+        val samplingStart = Instant.ofEpochMilli(1_001_000)
+        val samplingEnd = Instant.ofEpochMilli(1_301_000)
+        val sc = SC(
+            duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
+            timestamp = samplingEnd.toEpochMilli(),
+            steps5min = 120,
+            steps10min = 0,
+            steps15min = 0,
+            steps30min = 0,
+            steps60min = 0,
+            steps180min = 0,
+            device = "Garmin",
+            dateCreated = clock.millis(),
+        )
+        whenever(persistenceLayer.insertOrUpdateStepsCount(sc)).thenReturn(
+            Single.just(PersistenceLayer.TransactionResult())
+        )
+        // device null -> stored as "Garmin"
+        loopHub.storeStepsCount(samplingStart, samplingEnd, 120, 0, 0, 0, 0, 0, null)
+        verify(persistenceLayer).insertOrUpdateStepsCount(sc)
+    }
+
+    @Test
+    fun testStoreHeartRate_ErrorIsLogged() {
+        // A failing insert must end in the error callback, not in RxJava's global
+        // error handler (which AAPS escalates).
+        val samplingStart = Instant.ofEpochMilli(1_001_000)
+        val samplingEnd = Instant.ofEpochMilli(1_101_000)
+        val hr = HR(
+            timestamp = samplingStart.toEpochMilli(),
+            duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
+            dateCreated = clock.millis(),
+            beatsPerMinute = 101.0,
+            device = "Test Device"
+        )
+        whenever(persistenceLayer.insertOrUpdateHeartRate(hr)).thenReturn(
+            Single.error(IllegalStateException("db"))
+        )
+        loopHub.storeHeartRate(samplingStart, samplingEnd, 101, "Test Device")
         verify(persistenceLayer).insertOrUpdateHeartRate(hr)
     }
 }
