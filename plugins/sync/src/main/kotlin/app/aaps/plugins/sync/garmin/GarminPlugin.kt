@@ -101,6 +101,13 @@ class GarminPlugin @Inject constructor(
     val garminSteps = GarminSteps(aapsLogger, sp, loopHub, { clock })
 
     companion object {
+        // The AAPS key in a logged request (?key=... / &key=...).
+        private val KEY_IN_QUERY = Regex("(?<=[?&])key=[^&]+")
+
+        /** Replaces a non-empty AAPS key in [s] with "***", so logs can be shared. */
+        @VisibleForTesting
+        fun maskKey(s: String) = KEY_IN_QUERY.replace(s, "key=***")
+
         // Longest a loop push waits for AAPS to finish recalculating IOB/COB
         // (see onLoopDataChanged). The calculation normally takes a few seconds.
         @VisibleForTesting
@@ -556,9 +563,9 @@ class GarminPlugin @Inject constructor(
             Thread.sleep(1000L)
             HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
         } else {
-            aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri")
+            aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}")
             HttpURLConnection.HTTP_OK to action(uri).also {
-                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri, result: $it")
+                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}, result: $it")
             }
         }
     }
@@ -703,6 +710,9 @@ class GarminPlugin @Inject constructor(
         samplingStart: Instant, samplingEnd: Instant,
         avg: Int, device: String?, test: Boolean
     ) {
+        // Most requests carry no heart rate at all (no hr/hrStart parameters) - nothing
+        // to log or store then.
+        if (avg <= 0 && samplingStart == Instant.EPOCH) return
         aapsLogger.info(LTag.GARMIN, "average heart rate $avg BPM $samplingStart to $samplingEnd")
         if (test) return
         if (avg > 10 && samplingStart > Instant.ofEpochMilli(0L) && samplingEnd > samplingStart) {

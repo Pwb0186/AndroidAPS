@@ -176,10 +176,13 @@ class GarminMessenger(
     }
 
     private fun sendMessage(app: GarminApplication, msg: Any) {
-        // Convert msg to string for logging, excluding encodedGlucose to save log volume.
+        // Convert msg to string for logging, excluding encodedGlucose to save log volume
+        // and masking the AAPS key (logs get shared in bug reports).
         val s = when (msg) {
             is Map<*,*> ->
-                msg.filterKeys { it != "encodedGlucose" }.entries.joinToString(", ", "(", ")") { (k, v) -> "$k=$v" }
+                msg.filterKeys { it != "encodedGlucose" }.entries.joinToString(", ", "(", ")") { (k, v) ->
+                    if (k == "key" && v?.toString().orEmpty().isNotEmpty()) "$k=***" else "$k=$v"
+                }
             is List<*> ->
                 "(List of ${msg.size} items)"
             else ->
