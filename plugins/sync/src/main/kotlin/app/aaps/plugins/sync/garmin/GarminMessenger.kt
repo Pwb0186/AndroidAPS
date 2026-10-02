@@ -1,6 +1,7 @@
 package app.aaps.plugins.sync.garmin
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import io.reactivex.rxjava3.disposables.Disposable
@@ -57,10 +58,19 @@ class GarminMessenger(
         return GarminApplication(getDevice(client, deviceId), appId, appIdNames[appId])
     }
 
+    /** The fixed (V1) app ids get the glucose message broadcast to all of them, also
+     *  when they are not running or not installed - Garmin Connect then often gives no
+     *  answer. Sending again would only double that traffic (and log a warning per app),
+     *  so only push targets (V2 app ids, not in [appIdNames]) are sent again. */
+    @VisibleForTesting
+    fun resendOnNoAnswer(appId: String) = appId !in appIdNames
+
     private fun startDeviceClient() {
         synchronized(this) {
             if (disposed) return
-            activeDeviceClient = GarminDeviceClient(aapsLogger, context, this)
+            activeDeviceClient = GarminDeviceClient(
+                aapsLogger, context, this, resendOnNoAnswer = ::resendOnNoAnswer
+            )
         }
     }
 

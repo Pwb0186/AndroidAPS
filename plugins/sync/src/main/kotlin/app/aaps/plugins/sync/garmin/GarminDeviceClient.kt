@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.os.IBinder
+import androidx.annotation.VisibleForTesting
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.utils.waitMillis
@@ -30,7 +31,11 @@ class GarminDeviceClient(
     private val aapsLogger: AAPSLogger,
     private val context: Context,
     private val receiver: GarminReceiver,
-    private val retryWaitFactor: Long = 5L
+    private val retryWaitFactor: Long = 5L,
+    /** False for apps whose messages are not sent again when Garmin Connect gives no
+     *  answer - see [onNoAnswer]. */
+    @VisibleForTesting
+    var resendOnNoAnswer: (appId: String) -> Boolean = { true },
 ) : Disposable, GarminClient {
 
     override val name = "Device"
@@ -323,16 +328,21 @@ class GarminDeviceClient(
      *
      * So: if a newer message waits, drop this one and send the newer one at once.
      * If not, send this one again, once.
+     *
+     * Apps for which [resendOnNoAnswer] is false (the fixed V1 app ids GarminMessenger
+     * broadcasts to, which are often not running or not installed at all) are dropped
+     * at once, without sending again and with a debug log only.
      */
     private fun onNoAnswer(msg: Message, sentAttempt: Int) {
         if (state == State.DISPOSED) return
         val key = msg.app.device.id to msg.app.id
+        val resend = resendOnNoAnswer(msg.app.id)
         var dropped = false
         val toSend: Message? = synchronized(messageQueues) {
             val queue = messageQueues[key]
             // Answered, retried or removed in the meantime - nothing to do.
             if (queue == null || queue.peek() !== msg || msg.attempt != sentAttempt) return
-            if (queue.size > 1 || msg.noAnswerResent) {
+            if (queue.size > 1 || msg.noAnswerResent || !resend) {
                 queue.poll()
                 dropped = true
                 if (queue.isEmpty()) {
@@ -347,7 +357,11 @@ class GarminDeviceClient(
             }
         }
         if (dropped) {
-            aapsLogger.warn(LTag.GARMIN, "no answer for ${msg.app} after ${NO_ANSWER_TIMEOUT_SEC}s, dropped")
+            if (resend) {
+                aapsLogger.warn(LTag.GARMIN, "no answer for ${msg.app} after ${NO_ANSWER_TIMEOUT_SEC}s, dropped")
+            } else {
+                aapsLogger.debug(LTag.GARMIN, "no answer for ${msg.app} after ${NO_ANSWER_TIMEOUT_SEC}s, dropped (no resend for this app)")
+            }
             receiver.onSendMessage(this, msg.app.device.id, msg.app.id, "dropped: no answer")
         } else {
             aapsLogger.warn(LTag.GARMIN, "no answer for ${msg.app} after ${NO_ANSWER_TIMEOUT_SEC}s, resending")
