@@ -365,7 +365,7 @@ class GarminDeviceClientTest : TestBase() {
         // shutdown() disposes a third time and checks unbindService was called once.
     }
 
-    // The two tests below wait for the 20 s no-answer timeout (NO_ANSWER_TIMEOUT_SEC).
+    // The tests below wait for the 20 s no-answer timeout (NO_ANSWER_TIMEOUT_SEC).
 
     @Test
     fun noAnswer_resendOnce() {
@@ -398,5 +398,19 @@ class GarminDeviceClientTest : TestBase() {
 
         actions[client.sendMessageAction]!!.onReceive(context, successIntent(appId))
         verify(receiver).onSendMessage(client, device.id, appId, null)
+    }
+
+    @Test
+    fun noAnswer_noResendWhenDisabled() {
+        // V1 broadcasts go to fixed app ids that are often not running: no answer ->
+        // dropped at once, not sent again.
+        client.resendOnNoAnswer = { false }
+        val appId = "APPID1"
+        val data = "m1".toByteArray()
+        client.sendMessage(GarminApplication(device, appId, "$appId-name"), data)
+        verifySent(data, appId)
+
+        verify(receiver, timeout(25_000L)).onSendMessage(client, device.id, appId, "dropped: no answer")
+        verifySent(data, appId)  // sent once only
     }
 }
