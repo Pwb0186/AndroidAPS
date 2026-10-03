@@ -719,4 +719,21 @@ class GarminPluginTest : TestBaseWithProfile() {
         verify(loopHub, atLeastOnce()).carbsOnboard
         runBlocking { gp.onStop() }
     }
+
+    @Test
+    fun maskKey() {
+        assertEquals("/get?appId=A&key=***&trig=push", GarminPlugin.maskKey("/get?appId=A&key=000369&trig=push"))
+        assertEquals("/get?key=***", GarminPlugin.maskKey("/get?key=a%2Bb"))
+        // An empty key stays visible - it shows that no key is set.
+        assertEquals("/get?appId=A&key=&trig=push", GarminPlugin.maskKey("/get?appId=A&key=&trig=push"))
+        // Only the "key" parameter, not one that ends with "key".
+        assertEquals("/get?appkey=x&key=***", GarminPlugin.maskKey("/get?appkey=x&key=y"))
+    }
+
+    @Test
+    fun receiveHeartRate_NoHeartRateInRequest() {
+        // A /get without hr/hrStart/hrEnd (most of them) stores nothing.
+        gp.receiveHeartRate(createUri(mapOf("appId" to appId, "trig" to "push")))
+        verify(loopHub, never()).storeHeartRate(any(), any(), any(), anyOrNull())
+    }
 }

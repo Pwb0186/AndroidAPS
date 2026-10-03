@@ -78,6 +78,14 @@ class GarminMessengerTest : TestBase() {
     }
 
     @Test
+    fun resendOnNoAnswer_onlyForPushTargets() {
+        // Fixed (V1) app ids: no resend. Any other id is a V2 push target: resend.
+        assertEquals(false, messenger.resendOnNoAnswer(appId1))
+        assertEquals(false, messenger.resendOnNoAnswer(appId2))
+        assertEquals(true, messenger.resendOnNoAnswer("0123456789ABCDEF0123456789ABCDEF"))
+    }
+
+    @Test
     fun onReceiveMessage() {
         val data = GarminSerializer.serialize("foo")
         messenger.onReceiveMessage(client1, device1.id, appId1, data)
