@@ -60,4 +60,18 @@ interface LoopHub {
         avgHeartRate: Int,
         device: String?
     )
+
+    /** Stores steps count readings aggregated over multiple intervals.
+     *  Adapted from MTR (AIMI) and Swissalpine Garmin integration. */
+    fun storeStepsCount(
+        samplingStart: Instant,
+        samplingEnd: Instant,
+        steps5min: Int,
+        steps10min: Int = 0,
+        steps15min: Int = 0,
+        steps30min: Int = 0,
+        steps60min: Int = 0,
+        steps180min: Int = 0,
+        device: String? = null
+    )
 }
