@@ -28,6 +28,7 @@ import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.atMost
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoMoreInteractions
@@ -464,4 +465,10 @@ class GarminPluginTest : TestBaseWithProfile() {
         verify(loopHub, atLeastOnce()).glucoseUnit
     }
 
+    @Test
+    fun receiveHeartRate_NoHeartRateInRequest() {
+        // A /get without hr/hrStart/hrEnd (most of them) logs and stores nothing.
+        gp.receiveHeartRate(createUri(mapOf("trig" to "push")))
+        verify(loopHub, never()).storeHeartRate(any(), any(), any(), anyOrNull())
+    }
 }
