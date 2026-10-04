@@ -384,6 +384,9 @@ class GarminPlugin(
         samplingStart: Instant, samplingEnd: Instant,
         avg: Int, device: String?, test: Boolean
     ) {
+        // Most requests carry no heart rate at all (no hr/hrStart parameters) - nothing
+        // to log or store then.
+        if (avg <= 0 && samplingStart == Instant.ofEpochMilli(0L)) return
         aapsLogger.info(LTag.GARMIN, "average heart rate $avg BPM $samplingStart to $samplingEnd")
         if (test) return
         if (avg > 10 && samplingStart > Instant.ofEpochMilli(0L) && samplingEnd > samplingStart) {
