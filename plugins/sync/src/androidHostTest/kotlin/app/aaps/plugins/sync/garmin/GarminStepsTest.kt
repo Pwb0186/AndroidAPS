@@ -7,11 +7,9 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
-import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
-import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoInteractions
@@ -46,7 +44,7 @@ class GarminStepsTest : TestBase() {
     /** The single record the total-steps path stores: delta in steps5min, 5 min up to now. */
     private fun verifyStored(steps: Int, end: Instant = now) {
         verify(loopHub).storeStepsCount(
-            eq(end.minusSeconds(300)), eq(end), eq(steps), eq(0), eq(0), eq(0), eq(0), eq(0), eq("Garmin")
+            eq(end.minusSeconds(300)), eq(end), eq(steps), eq("Garmin")
         )
     }
 
@@ -217,20 +215,10 @@ class GarminStepsTest : TestBase() {
             }.forEach { it.join() }
         }
         verify(loopHub, times(rounds)).storeStepsCount(
-            any(), any(), eq(10), eq(0), eq(0), eq(0), eq(0), eq(0), eq("Garmin")
+            any(), any(), eq(10), eq("Garmin")
         )
         verifyNoMoreInteractions(loopHub)
         assertEquals(1000 + 10 * rounds, lastTotal)
-    }
-
-    @Test
-    fun testFlag_NothingStoredOrRemembered() {
-        val steps = newSteps()
-        steps.receive(uri("steps=1000"))
-        now = t0.plusSeconds(300)
-        steps.receive(uri("steps=1250&test=true"))
-        verifyNoInteractions(loopHub)
-        assertEquals(1000, lastTotal)
     }
 
     @Test
@@ -238,64 +226,5 @@ class GarminStepsTest : TestBase() {
         newSteps().receive(uri("appId=CBE3D42A21C748B4A1FDF2511322F0B6&hr=60&trig=push"))
         verifyNoInteractions(loopHub)
         assertTrue(store.isEmpty())
-    }
-
-    @Test
-    fun buckets_StoredAsSent() {
-        val end = t0.epochSecond
-        newSteps().receive(uri("steps5=40&steps10=80&steps15=120&steps30=200&steps60=400&steps180=900&stepsStart=${end - 300}&stepsEnd=$end&device=Edge"))
-        verify(loopHub).storeStepsCount(
-            eq(Instant.ofEpochSecond(end - 300)), eq(Instant.ofEpochSecond(end)),
-            eq(40), eq(80), eq(120), eq(200), eq(400), eq(900), eq("Edge")
-        )
-        assertTrue(store.isEmpty())  // the bucket path keeps no running total
-    }
-
-    @Test
-    fun bucketsAndTotal_BucketsWin() {
-        // A request with both forms is stored as buckets; the running total is left alone.
-        val end = t0.epochSecond
-        newSteps().receive(uri("steps=1000&steps5=40&stepsStart=${end - 300}&stepsEnd=$end"))
-        verify(loopHub).storeStepsCount(
-            eq(Instant.ofEpochSecond(end - 300)), eq(Instant.ofEpochSecond(end)),
-            eq(40), eq(0), eq(0), eq(0), eq(0), eq(0), anyOrNull()
-        )
-        verifyNoMoreInteractions(loopHub)
-        assertTrue(store.isEmpty())
-    }
-
-    @Test
-    fun buckets_TestFlag_NotStored() {
-        val end = t0.epochSecond
-        newSteps().receive(uri("steps5=40&stepsStart=${end - 300}&stepsEnd=$end&test=true"))
-        verifyNoInteractions(loopHub)
-    }
-
-    @Test
-    fun timestampsInMilliseconds_Rejected() {
-        // A device sending ms instead of epoch seconds would date the steps ~year 56,000.
-        val end = t0.toEpochMilli()
-        val steps = newSteps()
-        steps.receive(uri("steps5=40&stepsStart=${end - 300_000}&stepsEnd=$end"))
-        steps.receive(uri("steps=1000&stepsStart=${end - 300_000}&stepsEnd=$end"))
-        verifyNoInteractions(loopHub)
-        assertTrue(store.isEmpty())
-    }
-
-    @Test
-    fun timestampsMoreThanADayOff_Rejected() {
-        val start = t0.epochSecond - GarminSteps.MAX_TIMESTAMP_OFFSET_SEC - 1
-        newSteps().receive(uri("steps5=40&stepsStart=$start&stepsEnd=${start + 300}"))
-        verify(loopHub, never()).storeStepsCount(any(), any(), any(), any(), any(), any(), any(), any(), anyOrNull())
-    }
-
-    @Test
-    fun timestampsWithinADay_Accepted() {
-        val end = t0.epochSecond - 3600  // an hour old, e.g. sent after reconnecting
-        newSteps().receive(uri("steps5=40&stepsStart=${end - 300}&stepsEnd=$end"))
-        verify(loopHub).storeStepsCount(
-            eq(Instant.ofEpochSecond(end - 300)), eq(Instant.ofEpochSecond(end)),
-            eq(40), eq(0), eq(0), eq(0), eq(0), eq(0), anyOrNull()
-        )
     }
 }

@@ -8,15 +8,11 @@ import java.net.URI
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneId
-import kotlin.math.abs
 
-/** Step counts sent by Garmin devices over HTTP (`/get?steps=...`), stored in AAPS.
+/** Step counts sent by a Garmin watch face over HTTP (`/get?steps=<today's total>`).
  *
- * Adapted from MTR (AIMI) and Swissalpine Garmin integration. Two forms are accepted:
- *
- * - `steps=<today's total>` - what the AAPS watch faces send. AAPS keeps the last total
- *   and stores the difference as one 5-minute record (see [ingestTotalSteps]).
- * - `steps5=..&steps10=..&...&stepsStart=..&stepsEnd=..` - ready-made buckets, stored as is.
+ * AAPS keeps the last total and stores the difference as one 5-minute record
+ * (`steps5min`, see [ingestTotalSteps]).
  *
  * Kept out of GarminPlugin so the plugin stays about glucose and push, and so the step
  * logic can be tested on its own (GarminStepsTest).
@@ -49,12 +45,6 @@ class GarminSteps(
         @VisibleForTesting
         const val MAX_STEPS_GAP_MS = 12 * 60 * 1000L
 
-        // stepsStart/stepsEnd further than this from now are rejected. A device that
-        // sends milliseconds instead of seconds would otherwise store steps dated
-        // around the year 56,000.
-        @VisibleForTesting
-        const val MAX_TIMESTAMP_OFFSET_SEC = 24 * 60 * 60L
-
         /** AAPS treats all Garmin step inputs as one stream; see [ingestTotalSteps]. */
         private const val CANONICAL_DEVICE = "Garmin"
     }
@@ -63,77 +53,17 @@ class GarminSteps(
     // must not both compute a delta from the same last total.
     private val ingestLock = Any()
 
-    /** Reads steps from a `/get` request, if it has any. */
+    /** Reads `steps=<today's total>` from a `/get` request, if it has one. */
     fun receive(uri: URI) {
-        var samplingStart: Long? = uri.queryParameter("stepsStart")?.toLongOrNull()
-        var samplingEnd: Long? = uri.queryParameter("stepsEnd")?.toLongOrNull()
-        val now = clock().instant().epochSecond
-
-        if (samplingStart == null || samplingEnd == null) {
-            if ((uri.query ?: "").contains("steps", ignoreCase = true)) {
-                aapsLogger.debug(LTag.GARMIN, "HTTP steps without timestamps. Using fallback: now-5min to now")
-                samplingStart = now - 300
-                samplingEnd = now
-            } else {
-                return
-            }
-        } else if (abs(samplingStart - now) > MAX_TIMESTAMP_OFFSET_SEC || abs(samplingEnd - now) > MAX_TIMESTAMP_OFFSET_SEC) {
-            aapsLogger.warn(
-                LTag.GARMIN,
-                "Skip steps with implausible timestamps $samplingStart..$samplingEnd (now $now, expected epoch seconds)"
-            )
-            return
-        }
-
-        val steps5 = uri.queryParameter("steps5")?.toIntOrNull() ?: 0
-        val steps10 = uri.queryParameter("steps10")?.toIntOrNull() ?: 0
-        val steps15 = uri.queryParameter("steps15")?.toIntOrNull() ?: 0
-        val steps30 = uri.queryParameter("steps30")?.toIntOrNull() ?: 0
-        val steps60 = uri.queryParameter("steps60")?.toIntOrNull() ?: 0
-        val steps180 = uri.queryParameter("steps180")?.toIntOrNull() ?: 0
-        val device = uri.queryParameter("device")
-        val test = uri.queryParameter("test")?.lowercase() == "true"
-
-        val hasData = steps5 > 0 || steps10 > 0 || steps15 > 0 || steps30 > 0 || steps60 > 0 || steps180 > 0
-        if (!hasData) {
-            val totalSteps = uri.queryParameter("steps")?.toIntOrNull() ?: -1
-            aapsLogger.debug(LTag.GARMIN, "Garmin sent steps: $totalSteps")
-            if (totalSteps >= 0) {
-                ingestTotalSteps(device ?: "unknown", totalSteps, samplingStart, samplingEnd, test)
-                return
-            }
-
-            aapsLogger.debug(LTag.GARMIN, "HTTP Steps: All buckets are 0. Skipping.")
-            return
-        }
-
-        aapsLogger.info(LTag.GARMIN, "HTTP Steps: 5=$steps5, 10=$steps10, 15=$steps15, 30=$steps30, 60=$steps60, 180=$steps180")
-
-        storeBuckets(
-            Instant.ofEpochSecond(samplingStart),
-            Instant.ofEpochSecond(samplingEnd),
-            steps5,
-            steps10,
-            steps15,
-            steps30,
-            steps60,
-            steps180,
-            device,
-            test,
-        )
+        val totalSteps = uri.queryParameter("steps")?.toIntOrNull() ?: return
+        aapsLogger.debug(LTag.GARMIN, "Garmin sent steps: $totalSteps")
+        if (totalSteps >= 0) ingestTotalSteps(totalSteps)
     }
 
-    private fun ingestTotalSteps(
-        rawDevice: String,
-        totalSteps: Int,
-        samplingStart: Long,
-        samplingEnd: Long,
-        test: Boolean
-    ) {
-        if (test) {
-            aapsLogger.info(LTag.GARMIN, "[GarminHTTP] test mode active, skipping steps ingest (total=$totalSteps)")
-            return
-        }
+    private fun ingestTotalSteps(totalSteps: Int) {
+        // The record covers the 5 minutes up to now.
+        val samplingEnd = clock().instant().epochSecond
+        val samplingStart = samplingEnd - 300
 
         synchronized(ingestLock) {
             // Note: AAPS treats all Garmin step inputs as a single unified stream ("Garmin").
@@ -146,7 +76,7 @@ class GarminSteps(
             if (lastTotal < 0) {
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
-                aapsLogger.info(LTag.GARMIN, "[GarminHTTP] baseline steps=$totalSteps (rawDevice=$rawDevice)")
+                aapsLogger.info(LTag.GARMIN, "[GarminHTTP] baseline steps=$totalSteps")
                 return
             }
 
@@ -165,7 +95,7 @@ class GarminSteps(
                 // Midnight rollover — the watch step counter was reset for the new day
                 aapsLogger.info(
                     LTag.GARMIN,
-                    "[GarminHTTP] midnight rollover detected (lastDate=$lastDate today=$today totalSteps=$totalSteps rawDevice=$rawDevice)"
+                    "[GarminHTTP] midnight rollover detected (lastDate=$lastDate today=$today totalSteps=$totalSteps)"
                 )
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
@@ -173,8 +103,8 @@ class GarminSteps(
                     loopHub.storeStepsCount(
                         Instant.ofEpochSecond(samplingStart),
                         Instant.ofEpochSecond(samplingEnd),
-                        steps5min = totalSteps,
-                        device = CANONICAL_DEVICE
+                        totalSteps,
+                        CANONICAL_DEVICE
                     )
                 } else if (totalSteps > 0) {
                     aapsLogger.info(
@@ -190,7 +120,7 @@ class GarminSteps(
                 // Adjust baseline only without recording totalSteps as a 5-minute activity spike!
                 aapsLogger.warn(
                     LTag.GARMIN,
-                    "[GarminHTTP] step counter dropped from $lastTotal to $totalSteps on same day (rawDevice=$rawDevice); adjusting baseline without storing spike"
+                    "[GarminHTTP] step counter dropped from $lastTotal to $totalSteps on same day; adjusting baseline without storing spike"
                 )
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
@@ -200,7 +130,7 @@ class GarminSteps(
             // delta == 0: No movement or duplicate call
             if (delta == 0) {
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
-                aapsLogger.debug(LTag.GARMIN, "[GarminHTTP] delta=0, skipping (Total: $totalSteps, rawDevice=$rawDevice)")
+                aapsLogger.debug(LTag.GARMIN, "[GarminHTTP] delta=0, skipping (Total: $totalSteps,)")
                 return
             }
 
@@ -211,7 +141,7 @@ class GarminSteps(
             if (gapMs !in 1..MAX_STEPS_GAP_MS) {
                 aapsLogger.info(
                     LTag.GARMIN,
-                    "[GarminHTTP] long gap ($gapMs ms, delta=$delta, Total: $totalSteps, rawDevice=$rawDevice); adjusting baseline without storing spike"
+                    "[GarminHTTP] long gap ($gapMs ms, delta=$delta, Total: $totalSteps,); adjusting baseline without storing spike"
                 )
                 sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
@@ -229,43 +159,9 @@ class GarminSteps(
             loopHub.storeStepsCount(
                 Instant.ofEpochSecond(samplingStart),
                 Instant.ofEpochSecond(samplingEnd),
-                steps5min = delta,
-                device = CANONICAL_DEVICE
+                delta,
+                CANONICAL_DEVICE
             )
-        }
-    }
-
-    private fun storeBuckets(
-        samplingStart: Instant,
-        samplingEnd: Instant,
-        steps5: Int,
-        steps10: Int,
-        steps15: Int,
-        steps30: Int,
-        steps60: Int,
-        steps180: Int,
-        device: String?,
-        test: Boolean,
-    ) {
-        aapsLogger.info(
-            LTag.GARMIN,
-            "Steps aggregated: 5=$steps5, 10=$steps10, 15=$steps15, 30=$steps30, 60=$steps60, 180=$steps180 ($samplingStart to $samplingEnd)"
-        )
-        if (test) return
-        if (samplingStart > Instant.ofEpochMilli(0L) && samplingEnd > samplingStart) {
-            loopHub.storeStepsCount(
-                samplingStart,
-                samplingEnd,
-                steps5,
-                steps10,
-                steps15,
-                steps30,
-                steps60,
-                steps180,
-                device
-            )
-        } else {
-            aapsLogger.warn(LTag.GARMIN, "Skip saving invalid Steps timestamps $samplingStart..$samplingEnd")
         }
     }
 }

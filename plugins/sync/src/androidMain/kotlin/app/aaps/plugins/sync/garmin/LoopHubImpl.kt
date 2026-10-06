@@ -90,6 +90,10 @@ class LoopHubImpl(
     /** Returns true if the pump is connected. */
     override val isConnected: Boolean get() = runBlocking { loop.runningMode() } != RM.Mode.DISCONNECTED_PUMP
 
+    /** Returns true if the loop is enabled and actually running. */
+    override val isLoopEnabled: Boolean
+        get() = loop.isEnabled() && runBlocking { loop.runningMode() }.isLoopRunning()
+
     /** Returns true if the current profile is set of a limited amount of time. */
     override val isTemporaryProfile: Boolean
         get() {
@@ -115,6 +119,9 @@ class LoopHubImpl(
         get() = profileUtil.convertToMgdl(
             preferences.get(UnitDoubleKey.OverviewHighMark), glucoseUnit
         )
+
+    override val temporaryTarget
+        get() = runBlocking { persistenceLayer.getTemporaryTargetActiveAt(clock.millis()) }
 
     /** Tells the loop algorithm that the pump is physically connected. */
     override fun connectPump() {
@@ -180,30 +187,23 @@ class LoopHubImpl(
         }
     }
 
-    /**
-     * Stores step counts into the AAPS StepsCount table.
-     * Adapted from MTR (AIMI) and Swissalpine Garmin integration.
-     */
+    /** Stores the steps of one 5-minute interval. The longer intervals of the steps
+     *  table are not known here and stay 0. */
     override fun storeStepsCount(
         samplingStart: Instant,
         samplingEnd: Instant,
         steps5min: Int,
-        steps10min: Int,
-        steps15min: Int,
-        steps30min: Int,
-        steps60min: Int,
-        steps180min: Int,
         device: String?
     ) {
         val sc = SC(
             duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
             timestamp = samplingEnd.toEpochMilli(),
             steps5min = steps5min,
-            steps10min = steps10min,
-            steps15min = steps15min,
-            steps30min = steps30min,
-            steps60min = steps60min,
-            steps180min = steps180min,
+            steps10min = 0,
+            steps15min = 0,
+            steps30min = 0,
+            steps60min = 0,
+            steps180min = 0,
             device = device ?: "Garmin",
             dateCreated = clock.millis(),
         )
