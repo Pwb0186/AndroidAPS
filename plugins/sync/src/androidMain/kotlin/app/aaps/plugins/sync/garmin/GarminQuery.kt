@@ -9,7 +9,8 @@ import java.nio.charset.StandardCharsets
  * Reads the raw (still encoded) query and decodes the value exactly once.
  * `uri.query` is already decoded, so decoding that again turned "+" into a space
  * and broke "%xx" (e.g. an AAPS key with "+" never matched). A value that is not
- * valid "%xx" encoding is returned as it is.
+ * valid "%xx" encoding is returned as it is. A literal "+" stays "+" (as before):
+ * URLDecoder would make it a space, and a key sent without encoding would not match.
  *
  * Used by GarminPlugin and GarminSteps, so both read a request the same way.
  */
@@ -20,7 +21,7 @@ internal fun URI.queryParameter(name: String): String? {
         .firstOrNull { kv -> kv.size == 2 && kv[0] == name }?.get(1)
         ?: return null
     return try {
-        URLDecoder.decode(raw, StandardCharsets.UTF_8.name())
+        URLDecoder.decode(raw.replace("+", "%2B"), StandardCharsets.UTF_8.name())
     } catch (_: Exception) {
         raw
     }

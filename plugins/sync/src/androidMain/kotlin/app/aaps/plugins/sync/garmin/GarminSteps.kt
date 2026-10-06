@@ -11,8 +11,8 @@ import java.time.ZoneId
 
 /** Step counts sent by a Garmin watch face over HTTP (`/get?steps=<today's total>`).
  *
- * AAPS keeps the last total and stores the difference as one 5-minute record
- * (`steps5min`, see [ingestTotalSteps]).
+ * AAPS keeps the last total and stores the difference as one record (`steps5min`) that
+ * covers the time since the last reading (see [ingestTotalSteps]).
  *
  * Kept out of GarminPlugin so the plugin stays about glucose and push, and so the step
  * logic can be tested on its own (GarminStepsTest).
@@ -37,7 +37,7 @@ class GarminSteps(
         const val PREF_GARMIN_LAST_TS = "garmin_http_last_steps_ts"
 
         // Longest gap between two step readings whose delta is still stored.
-        // The delta is always stored as a single 5-minute record (steps5min), so a
+        // The delta is always stored as a single record (steps5min), so a
         // delta that actually accumulated over a much longer time (phone out of
         // range, watch face not running, AAPS restarted) would show up as a false
         // activity spike. Beyond this gap only the baseline is moved. Same limit
@@ -61,16 +61,16 @@ class GarminSteps(
     }
 
     private fun ingestTotalSteps(totalSteps: Int) {
-        // The record covers the 5 minutes up to now.
-        val samplingEnd = clock().instant().epochSecond
-        val samplingStart = samplingEnd - 300
-
         synchronized(ingestLock) {
             // Note: AAPS treats all Garmin step inputs as a single unified stream ("Garmin").
             // Per-device tracking is not supported, matching the global PREF_GARMIN_LAST_STEPS.
             val now = clock().millis()
             val lastTotal = sp.getInt(PREF_GARMIN_LAST_STEPS, -1)
             val lastTs = sp.getLong(PREF_GARMIN_LAST_TS, 0L)
+            // A stored record covers the time since the last reading (at most
+            // MAX_STEPS_GAP_MS), so records follow each other without overlap.
+            val samplingStart = Instant.ofEpochMilli(lastTs)
+            val samplingEnd = Instant.ofEpochMilli(now)
 
             // First measurement ever → record baseline value only, no delta
             if (lastTotal < 0) {
@@ -101,8 +101,8 @@ class GarminSteps(
                 sp.putLong(PREF_GARMIN_LAST_TS, now)
                 if (totalSteps > 0 && gapMs in 1..MAX_STEPS_GAP_MS) {
                     loopHub.storeStepsCount(
-                        Instant.ofEpochSecond(samplingStart),
-                        Instant.ofEpochSecond(samplingEnd),
+                        samplingStart,
+                        samplingEnd,
                         totalSteps,
                         CANONICAL_DEVICE
                     )
@@ -151,14 +151,14 @@ class GarminSteps(
             // delta > 0: Normal activity
             aapsLogger.info(
                 LTag.GARMIN,
-                "[GarminHTTP] steps delta=$delta (${Instant.ofEpochSecond(samplingStart)} → ${Instant.ofEpochSecond(samplingEnd)}) Total: $totalSteps"
+                "[GarminHTTP] steps delta=$delta ($samplingStart → $samplingEnd) Total: $totalSteps"
             )
 
             sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
             sp.putLong(PREF_GARMIN_LAST_TS, now)
             loopHub.storeStepsCount(
-                Instant.ofEpochSecond(samplingStart),
-                Instant.ofEpochSecond(samplingEnd),
+                samplingStart,
+                samplingEnd,
                 delta,
                 CANONICAL_DEVICE
             )

@@ -41,11 +41,10 @@ class GarminStepsTest : TestBase() {
     private val lastTotal get() = store[GarminSteps.PREF_GARMIN_LAST_STEPS]
     private val lastTs get() = store[GarminSteps.PREF_GARMIN_LAST_TS]
 
-    /** The single record the total-steps path stores: delta in steps5min, 5 min up to now. */
-    private fun verifyStored(steps: Int, end: Instant = now) {
-        verify(loopHub).storeStepsCount(
-            eq(end.minusSeconds(300)), eq(end), eq(steps), eq("Garmin")
-        )
+    /** The single record the total-steps path stores: delta in steps5min, from the last
+     *  reading ([start], 5 min before [end] in most tests) up to now. */
+    private fun verifyStored(steps: Int, start: Instant = now.minusSeconds(300), end: Instant = now) {
+        verify(loopHub).storeStepsCount(eq(start), eq(end), eq(steps), eq("Garmin"))
     }
 
     @BeforeEach
@@ -123,7 +122,7 @@ class GarminStepsTest : TestBase() {
         steps.receive(uri("steps=1000"))
         now = t0.plusMillis(GarminSteps.MAX_STEPS_GAP_MS)
         steps.receive(uri("steps=1500"))
-        verifyStored(500)
+        verifyStored(500, start = t0)  // the record covers the whole 12 min, not 5
     }
 
     @Test
@@ -167,7 +166,7 @@ class GarminStepsTest : TestBase() {
         steps.receive(uri("steps=9000"))
         now = now.plusSeconds(240)
         steps.receive(uri("steps=9050"))
-        verifyStored(50)
+        verifyStored(50, start = now.minusSeconds(240))
     }
 
     @Test

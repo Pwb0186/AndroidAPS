@@ -14,6 +14,12 @@ class GarminQueryTest {
     }
 
     @Test
+    fun literalPlusKept() {
+        // A client that does not encode the key: "+" must not become a space.
+        assertEquals("a+b", URI("http://127.0.0.1/get?key=a+b").queryParameter("key"))
+    }
+
+    @Test
     fun percentDecodedOnce() {
         assertEquals("100%", URI("http://127.0.0.1/get?key=100%25").queryParameter("key"))
     }
