@@ -22,7 +22,7 @@ internal fun URI.queryParameter(name: String): String? {
         ?: return null
     return try {
         URLDecoder.decode(raw.replace("+", "%2B"), StandardCharsets.UTF_8.name())
-    } catch (_: Exception) {
+    } catch (_: IllegalArgumentException) {
         raw
     }
 }
