@@ -80,7 +80,7 @@ class GarminSteps(
                 return
             }
 
-            val today = clock().instant().atZone(zone()).toLocalDate()
+            val today = samplingEnd.atZone(zone()).toLocalDate()  // the same instant as now
             val lastDate = if (lastTs > 0L) Instant.ofEpochMilli(lastTs).atZone(zone()).toLocalDate() else today
             val isNewDay = today.isAfter(lastDate)
             val delta = totalSteps - lastTotal
