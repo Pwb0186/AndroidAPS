@@ -5,6 +5,7 @@ import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.HR
 import app.aaps.core.data.model.RM
+import app.aaps.core.data.model.SC
 import app.aaps.core.data.model.TE
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
@@ -26,6 +27,7 @@ import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.extensions.convertedToPercent
+import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.kotlin.plusAssign
 import java.time.Clock
@@ -82,6 +84,10 @@ class LoopHubImpl @Inject constructor(
     /** Returns true if the pump is connected. */
     override val isConnected: Boolean get() = loop.runningMode != RM.Mode.DISCONNECTED_PUMP
 
+    /** Returns true if the loop is enabled and actually running. */
+    override val isLoopEnabled: Boolean
+        get() = loop.isEnabled() && loop.runningMode.isLoopRunning()
+
     /** Returns true if the current profile is set of a limited amount of time. */
     override val isTemporaryProfile: Boolean
         get() {
@@ -107,6 +113,9 @@ class LoopHubImpl @Inject constructor(
         get() = profileUtil.convertToMgdl(
             preferences.get(UnitDoubleKey.OverviewHighMark), glucoseUnit
         )
+
+    override val temporaryTarget
+        get() = persistenceLayer.getTemporaryTargetActiveAt(clock.millis())
 
     /** Tells the loop algorithm that the pump is physically connected. */
     override fun connectPump() {
@@ -154,6 +163,7 @@ class LoopHubImpl @Inject constructor(
     }
 
     /** Stores hear rate readings that a taken and averaged of the given interval. */
+    @Suppress("CheckResult")
     override fun storeHeartRate(
         samplingStart: Instant, samplingEnd: Instant,
         avgHeartRate: Int,
@@ -166,6 +176,56 @@ class LoopHubImpl @Inject constructor(
             beatsPerMinute = avgHeartRate.toDouble(),
             device = device ?: "Garmin",
         )
-        disposable += persistenceLayer.insertOrUpdateHeartRate(hr).subscribe()
+        // Not added to [disposable]: nothing ever clears it, so every insert (about
+        // 290 a day for HR) stayed referenced for as long as AAPS ran. The insert is a
+        // one-shot Single that finishes on its own; there is nothing to cancel.
+        persistenceLayer.insertOrUpdateHeartRate(hr).subscribe(
+            { },
+            { error -> aapsLogger.error(LTag.GARMIN, "Failed to store heart rate: ${error.message}") }
+        )
+    }
+
+    @Suppress("CheckResult")
+    override fun storeStepsCount(
+        timestamp: Instant,
+        stepsPerWindow: Map<Int, Int>,
+        device: String?
+    ) {
+        val records = stepsCountRecords(timestamp, stepsPerWindow, device)
+        if (records.isEmpty()) return
+        // Not added to [disposable] - see storeHeartRate().
+        Single.concat(records.map { persistenceLayer.insertOrUpdateStepsCount(it) }).toList().subscribe(
+            { results ->
+                aapsLogger.debug(
+                    LTag.GARMIN,
+                    "Steps stored in DB: ${results.sumOf { it.inserted.size }} records, $stepsPerWindow at $timestamp"
+                )
+            },
+            { error ->
+                aapsLogger.error(
+                    LTag.GARMIN,
+                    "❌ Failed to store steps: ${error.message}"
+                )
+            }
+        )
+    }
+
+    /** One record per window, all with the same counts; see [LoopHub.storeStepsCount]. */
+    private fun stepsCountRecords(timestamp: Instant, stepsPerWindow: Map<Int, Int>, device: String?): List<SC> {
+        fun steps(window: Int) = stepsPerWindow[window] ?: 0
+        return stepsPerWindow.keys.sorted().map { window ->
+            SC(
+                duration = window * 60_000L,
+                timestamp = timestamp.toEpochMilli(),
+                steps5min = steps(5),
+                steps10min = steps(10),
+                steps15min = steps(15),
+                steps30min = steps(30),
+                steps60min = steps(60),
+                steps180min = steps(180),
+                device = device ?: "Garmin",
+                dateCreated = clock.millis(),
+            )
+        }
     }
 }
