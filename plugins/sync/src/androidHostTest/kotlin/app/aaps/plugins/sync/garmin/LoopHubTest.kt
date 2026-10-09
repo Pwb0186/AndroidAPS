@@ -343,11 +343,12 @@ class LoopHubTest : TestBase() {
         verify(persistenceLayer).getTemporaryTargetActiveAt(clock.millis())
     }
 
-    private fun stepsCount(samplingStart: Instant, samplingEnd: Instant) = SC(
-        duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
-        timestamp = samplingEnd.toEpochMilli(),
+    /** The record for one window: the window as duration, the same counts in all. */
+    private fun stepsCount(window: Int) = SC(
+        duration = window * 60_000L,
+        timestamp = 1_301_000L,
         steps5min = 120,
-        steps10min = 0,
+        steps10min = 200,
         steps15min = 0,
         steps30min = 0,
         steps60min = 0,
@@ -358,27 +359,23 @@ class LoopHubTest : TestBase() {
 
     @Test
     fun testStoreStepsCount() = runTest {
-        val samplingStart = Instant.ofEpochMilli(1_001_000)
-        val samplingEnd = Instant.ofEpochMilli(1_301_000)
-        val sc = stepsCount(samplingStart, samplingEnd)
-        whenever(persistenceLayer.insertOrUpdateStepsCounts(listOf(sc))).thenReturn(
+        val records = listOf(stepsCount(5), stepsCount(10))
+        whenever(persistenceLayer.insertOrUpdateStepsCounts(records)).thenReturn(
             PersistenceLayer.TransactionResult()
         )
-        // device null -> stored as "Garmin"
-        loopHub.storeStepsCount(samplingStart, samplingEnd, 120, null)
+        // One record per window; device null -> stored as "Garmin"
+        loopHub.storeStepsCount(Instant.ofEpochMilli(1_301_000), mapOf(10 to 200, 5 to 120), null)
         kotlinx.coroutines.delay(100.milliseconds) // Give time for appScope.launch to complete
-        verify(persistenceLayer).insertOrUpdateStepsCounts(listOf(sc))
+        verify(persistenceLayer).insertOrUpdateStepsCounts(records)
     }
 
     @Test
     fun testStoreStepsCount_ErrorIsCaught() = runTest {
         // A failing insert is logged; it must not escape appScope.launch.
-        val samplingStart = Instant.ofEpochMilli(1_001_000)
-        val samplingEnd = Instant.ofEpochMilli(1_301_000)
-        val sc = stepsCount(samplingStart, samplingEnd)
-        whenever(persistenceLayer.insertOrUpdateStepsCounts(listOf(sc))).thenThrow(IllegalStateException("db"))
-        loopHub.storeStepsCount(samplingStart, samplingEnd, 120, null)
+        val records = listOf(stepsCount(5), stepsCount(10))
+        whenever(persistenceLayer.insertOrUpdateStepsCounts(records)).thenThrow(IllegalStateException("db"))
+        loopHub.storeStepsCount(Instant.ofEpochMilli(1_301_000), mapOf(5 to 120, 10 to 200), null)
         kotlinx.coroutines.delay(100.milliseconds)
-        verify(persistenceLayer).insertOrUpdateStepsCounts(listOf(sc))
+        verify(persistenceLayer).insertOrUpdateStepsCounts(records)
     }
 }

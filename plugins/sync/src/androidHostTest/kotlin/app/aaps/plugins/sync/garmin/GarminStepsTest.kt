@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.argThat
 import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -41,10 +42,9 @@ class GarminStepsTest : TestBase() {
     private val lastTotal get() = store[GarminSteps.PREF_GARMIN_LAST_STEPS]
     private val lastTs get() = store[GarminSteps.PREF_GARMIN_LAST_TS]
 
-    /** The single record the total-steps path stores: delta in steps5min, from the last
-     *  reading ([start], 5 min before [end] in most tests) up to now. */
-    private fun verifyStored(steps: Int, start: Instant = now.minusSeconds(300), end: Instant = now) {
-        verify(loopHub).storeStepsCount(eq(start), eq(end), eq(steps), eq("Garmin"))
+    /** Steps stored at [now], by window in minutes - exactly these windows. */
+    private fun verifyStored(vararg windows: Pair<Int, Int>) {
+        verify(loopHub).storeStepsCount(eq(now), eq(mapOf(*windows)), eq("Garmin"))
     }
 
     @BeforeEach
@@ -70,23 +70,24 @@ class GarminStepsTest : TestBase() {
     }
 
     @Test
-    fun normalDelta_StoredAsFiveMinuteRecord() {
+    fun normalDelta_StoredForFiveMinutes() {
         val steps = newSteps()
         steps.receive(uri("steps=1000"))
         now = t0.plusSeconds(300)
         steps.receive(uri("steps=1250"))
-        verifyStored(250)
+        verifyStored(5 to 250)
         assertEquals(1250, lastTotal)
         verifyNoMoreInteractions(loopHub)
     }
 
     @Test
-    fun deltaZero_NothingStored_TimeMoved() {
+    fun deltaZero_StoredAsZero() {
+        // Standing still is stored too, so a rule like "fewer than 100 steps" can see it.
         val steps = newSteps()
         steps.receive(uri("steps=1000"))
         now = t0.plusSeconds(300)
         steps.receive(uri("steps=1000"))
-        verifyNoInteractions(loopHub)
+        verifyStored(5 to 0)
         assertEquals(now.toEpochMilli(), lastTs)
     }
 
@@ -102,7 +103,59 @@ class GarminStepsTest : TestBase() {
         }
         now = t0.plusSeconds(1500)  // 25 min after the first reading, 5 min after the last
         steps.receive(uri("steps=1080"))
-        verifyStored(80)
+        verifyStored(5 to 80, 10 to 80, 15 to 80)
+    }
+
+    @Test
+    fun windows_AfterThreeHours() {
+        // 100 steps every 5 minutes; old readings drop out of the 180-minute window.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        for (i in 1..36) {
+            now = t0.plusSeconds(300L * i)
+            steps.receive(uri("steps=${1000 + 100 * i}"))
+        }
+        verifyStored(5 to 100, 10 to 200, 15 to 300, 30 to 600, 60 to 1200, 180 to 3600)
+        now = t0.plusSeconds(300L * 37)
+        steps.receive(uri("steps=${1000 + 100 * 37}"))
+        verifyStored(5 to 100, 10 to 200, 15 to 300, 30 to 600, 60 to 1200, 180 to 3600)
+    }
+
+    @Test
+    fun onlyCoveredWindows_AfterBaseline() {
+        // 10 minutes of history: the 15-minute window and longer are left out, not
+        // stored too low.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=1100"))
+        now = t0.plusSeconds(600)
+        steps.receive(uri("steps=1250"))
+        verifyStored(5 to 150, 10 to 250)
+    }
+
+    @Test
+    fun shortFirstInterval_NothingStored() {
+        // 4 minutes of history do not cover the 5-minute window yet.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        now = t0.plusSeconds(240)
+        steps.receive(uri("steps=1100"))
+        verifyNoInteractions(loopHub)
+        assertEquals(1100, lastTotal)
+    }
+
+    @Test
+    fun stepsSpreadOverInterval() {
+        // 500 steps in 5 min, then 700 steps in 7 min (100 a minute): the last 5 minutes
+        // get 5/7 of the 700, the last 10 minutes all 700 and 3/5 of the 500.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=1500"))
+        now = t0.plusSeconds(720)
+        steps.receive(uri("steps=2200"))
+        verifyStored(5 to 500, 10 to 1000)
     }
 
     @Test
@@ -118,11 +171,12 @@ class GarminStepsTest : TestBase() {
 
     @Test
     fun gapAtLimit_StillStored() {
+        // 500 steps over the whole 12 minutes: 5/12 of them in the last 5 minutes.
         val steps = newSteps()
         steps.receive(uri("steps=1000"))
         now = t0.plusMillis(GarminSteps.MAX_STEPS_GAP_MS)
         steps.receive(uri("steps=1500"))
-        verifyStored(500, start = t0)  // the record covers the whole 12 min, not 5
+        verifyStored(5 to 208, 10 to 417)
     }
 
     @Test
@@ -136,13 +190,43 @@ class GarminStepsTest : TestBase() {
     }
 
     @Test
+    fun counterDrop_WindowsStartAgain() {
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        for (i in 1..3) {
+            now = t0.plusSeconds(300L * i)
+            steps.receive(uri("steps=${1000 + 100 * i}"))
+        }
+        now = t0.plusSeconds(1200)
+        steps.receive(uri("steps=50"))  // another counter
+        now = t0.plusSeconds(1500)
+        steps.receive(uri("steps=120"))
+        verifyStored(5 to 70)
+    }
+
+    @Test
+    fun restart_WindowsStartAgain() {
+        // The history is only in memory: after an AAPS restart the windows start again
+        // from the last reading, which is kept in the preferences.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        for (i in 1..3) {
+            now = t0.plusSeconds(300L * i)
+            steps.receive(uri("steps=${1000 + 100 * i}"))
+        }
+        now = t0.plusSeconds(1200)
+        newSteps().receive(uri("steps=1400"))
+        verifyStored(5 to 100)
+    }
+
+    @Test
     fun midnightShortGap_NewDayTotalStored() {
         now = Instant.parse("2026-10-01T23:58:00Z")
         val steps = newSteps()
         steps.receive(uri("steps=9000"))
         now = now.plusSeconds(300)  // 00:03, counter reset at midnight
         steps.receive(uri("steps=40"))
-        verifyStored(40)
+        verifyStored(5 to 40)
         assertEquals(40, lastTotal)
     }
 
@@ -161,12 +245,12 @@ class GarminStepsTest : TestBase() {
     fun midnightWithoutDrop_OrdinaryDelta() {
         // The watch read yesterday's total just before its midnight, AAPS got it just
         // after the phone's: not a reset, so only the difference is stored.
-        now = Instant.parse("2026-10-01T23:58:00Z")
+        now = Instant.parse("2026-10-01T23:57:00Z")
         val steps = newSteps()
         steps.receive(uri("steps=9000"))
-        now = now.plusSeconds(240)
+        now = now.plusSeconds(300)
         steps.receive(uri("steps=9050"))
-        verifyStored(50, start = now.minusSeconds(240))
+        verifyStored(5 to 50)
     }
 
     @Test
@@ -178,7 +262,7 @@ class GarminStepsTest : TestBase() {
         steps.receive(uri("steps=9000"))
         now = now.plusSeconds(300)  // 00:03 local, next day
         steps.receive(uri("steps=40"))
-        verifyStored(40)
+        verifyStored(5 to 40)
         assertEquals(40, lastTotal)
     }
 
@@ -191,14 +275,14 @@ class GarminStepsTest : TestBase() {
         steps.receive(uri("steps=300"))
         now = now.plusSeconds(300)  // 02:03 winter time
         steps.receive(uri("steps=320"))
-        verifyStored(20)
+        verifyStored(5 to 20)
     }
 
     @Test
     fun sameTotalFromTwoThreads_StoredOnce() {
         // The HTTP server answers on a thread pool, so two /get with the same total
-        // can arrive at the same time. Only one of them may store the delta - without
-        // ingestLock both read the same last total and both store it.
+        // can arrive at the same time. Only one of them may count the delta - without
+        // ingestLock both read the same last total and both count it.
         val steps = newSteps()
         steps.receive(uri("steps=1000"))
         val rounds = 200
@@ -213,8 +297,10 @@ class GarminStepsTest : TestBase() {
                 }.apply { start() }
             }.forEach { it.join() }
         }
-        verify(loopHub, times(rounds)).storeStepsCount(
-            any(), any(), eq(10), eq("Garmin")
+        // 10 steps a minute: 50 in every 5 minutes. The first 4 rounds do not cover
+        // 5 minutes yet.
+        verify(loopHub, times(rounds - 4)).storeStepsCount(
+            any(), argThat { this[5] == 50 }, eq("Garmin")
         )
         verifyNoMoreInteractions(loopHub)
         assertEquals(1000 + 10 * rounds, lastTotal)

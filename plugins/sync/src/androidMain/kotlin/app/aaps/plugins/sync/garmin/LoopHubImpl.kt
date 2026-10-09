@@ -187,36 +187,41 @@ class LoopHubImpl(
         }
     }
 
-    /** Stores the steps of one 5-minute interval. The longer intervals of the steps
-     *  table are not known here and stay 0. */
     override fun storeStepsCount(
-        samplingStart: Instant,
-        samplingEnd: Instant,
-        steps5min: Int,
+        timestamp: Instant,
+        stepsPerWindow: Map<Int, Int>,
         device: String?
     ) {
-        val sc = SC(
-            duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
-            timestamp = samplingEnd.toEpochMilli(),
-            steps5min = steps5min,
-            steps10min = 0,
-            steps15min = 0,
-            steps30min = 0,
-            steps60min = 0,
-            steps180min = 0,
-            device = device ?: "Garmin",
-            dateCreated = clock.millis(),
-        )
+        val records = stepsCountRecords(timestamp, stepsPerWindow, device)
+        if (records.isEmpty()) return
         appScope.launch {
             try {
-                val result = persistenceLayer.insertOrUpdateStepsCounts(listOf(sc))
-                val id = result.inserted.firstOrNull()?.id ?: result.updated.firstOrNull()?.id
-                aapsLogger.debug(LTag.GARMIN, "Steps stored in DB: ID=$id, 5min=$steps5min, end=$samplingEnd")
+                val result = persistenceLayer.insertOrUpdateStepsCounts(records)
+                aapsLogger.debug(LTag.GARMIN, "Steps stored in DB: ${result.inserted.size} records, $stepsPerWindow at $timestamp")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 aapsLogger.error(LTag.GARMIN, "Failed to store steps: ${e.message}")
             }
+        }
+    }
+
+    /** One record per window, all with the same counts; see [LoopHub.storeStepsCount]. */
+    private fun stepsCountRecords(timestamp: Instant, stepsPerWindow: Map<Int, Int>, device: String?): List<SC> {
+        fun steps(window: Int) = stepsPerWindow[window] ?: 0
+        return stepsPerWindow.keys.sorted().map { window ->
+            SC(
+                duration = window * 60_000L,
+                timestamp = timestamp.toEpochMilli(),
+                steps5min = steps(5),
+                steps10min = steps(10),
+                steps15min = steps(15),
+                steps30min = steps(30),
+                steps60min = steps(60),
+                steps180min = steps(180),
+                device = device ?: "Garmin",
+                dateCreated = clock.millis(),
+            )
         }
     }
 }
