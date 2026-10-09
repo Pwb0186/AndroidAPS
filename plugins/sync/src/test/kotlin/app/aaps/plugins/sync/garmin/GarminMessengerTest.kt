@@ -77,6 +77,14 @@ class GarminMessengerTest : TestBase() {
     }
 
     @Test
+    fun resendOnNoAnswer_onlyForPushTargets() {
+        // Fixed (V1) app ids: no resend. Any other id is a V2 push target: resend.
+        assertEquals(false, messenger.resendOnNoAnswer(appId1))
+        assertEquals(false, messenger.resendOnNoAnswer(appId2))
+        assertEquals(true, messenger.resendOnNoAnswer("0123456789ABCDEF0123456789ABCDEF"))
+    }
+
+    @Test
     fun onReceiveMessage() {
         val data = GarminSerializer.serialize("foo")
         messenger.onReceiveMessage(client1, device1.id, appId1, data)
@@ -109,5 +117,40 @@ class GarminMessengerTest : TestBase() {
         assertEquals(listOf("foo"), GarminSerializer.deserialize(msg21))
         assertEquals(listOf("foo"), GarminSerializer.deserialize(msg22))
         messenger.onSendMessage(client1, device1.id, appId1, null)
+    }
+
+    @Test
+    fun sendMessageToTargetApps() {
+        // V2: only the given app ids get the message, on every connected device.
+        val target = "0123456789ABCDEF0123456789ABCDEF"
+        messenger.sendMessage(mapOf("command" to "updateWatch"), setOf(target))
+        assertEquals(2, outMessages.size)
+        outMessages.forEach { (app, payload) ->
+            assertEquals(target, app.id)
+            assertEquals(mapOf("command" to "updateWatch"), GarminSerializer.deserialize(payload))
+        }
+        assertEquals(setOf(device1, device2), outMessages.map { (app, _) -> app.device }.toSet())
+    }
+
+    @Test
+    fun sendMessageToNoTargetApps() {
+        messenger.sendMessage(mapOf("command" to "updateWatch"), emptySet())
+        assertEquals(0, outMessages.size)
+    }
+
+    @Test
+    fun onConnectedCallback() {
+        var connected = 0
+        val m = GarminMessenger(
+            aapsLogger, context, apps, { _, _ -> },
+            enableConnectIq = false, enableSimulator = false,
+            onConnected = { connected++ }
+        )
+        val c = mock<GarminClient> { on { name } doReturn "Mock3" }
+        m.onConnect(c)
+        m.onDisconnect(c)
+        assertEquals(1, connected)
+        verify(c).dispose()
+        m.dispose()
     }
 }

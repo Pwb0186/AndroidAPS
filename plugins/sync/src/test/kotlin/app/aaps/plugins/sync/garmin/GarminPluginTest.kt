@@ -5,6 +5,7 @@ import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.interfaces.rx.events.EventNewBG
+import app.aaps.core.interfaces.sharedPreferences.SP
 import app.aaps.core.keys.BooleanNonKey
 import app.aaps.core.keys.IntNonKey
 import app.aaps.core.keys.StringNonKey
@@ -19,6 +20,7 @@ import com.google.common.truth.Truth
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -29,10 +31,13 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.atMost
+import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
+import org.mockito.kotlin.verifyNoInteractions
 import org.mockito.kotlin.verifyNoMoreInteractions
 import org.mockito.kotlin.whenever
 import java.net.ConnectException
@@ -52,6 +57,10 @@ class GarminPluginTest : TestBaseWithProfile() {
     private lateinit var gp: GarminPlugin
 
     @Mock private lateinit var loopHub: LoopHub
+    // Named garminSp so it can't clash with an "sp" in the test base class.
+    @Mock private lateinit var garminSp: SP
+    /** Backing store for [garminSp] - GarminV2Push keeps its app registry there. */
+    private val spStore = mutableMapOf<String, Any>()
     private val clock = Clock.fixed(Instant.ofEpochMilli(10_000), ZoneId.of("UTC"))
 
     init {
@@ -73,13 +82,20 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @BeforeEach
     fun setup() {
-        gp = GarminPlugin(aapsLogger, rh, preferences, context, loopHub, rxBus)
+        whenever(garminSp.getString(any<String>(), any<String>())).thenAnswer { i ->
+            spStore[i.getArgument(0)] as? String ?: i.getArgument<String>(1)
+        }
+        doAnswer { i -> spStore[i.getArgument(0)] = i.getArgument<String>(1); null }
+            .whenever(garminSp).putString(any<String>(), any<String>())
+        gp = GarminPlugin(aapsLogger, rh, preferences, garminSp, context, loopHub, rxBus)
         gp.clock = clock
         whenever(loopHub.currentProfileName).thenReturn("Default")
         whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28890)
         whenever(preferences.get(any<IntNonKey>())).thenAnswer { i -> 0 }
         whenever(preferences.get(any<BooleanNonKey>())).thenAnswer { i -> false }
         whenever(preferences.get(any<StringNonKey>())).thenAnswer { i -> "" }
+        // Not covered by the StringNonKey stub above; the plugin never gets null in real use.
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("")
     }
 
     @AfterEach
@@ -88,9 +104,12 @@ class GarminPluginTest : TestBaseWithProfile() {
         verify(loopHub, atMost(3)).insulinOnboard
         verify(loopHub, atMost(3)).insulinBasalOnboard
         verify(loopHub, atMost(3)).temporaryBasal
-        verify(loopHub, atMost(3)).carbsOnboard
+        // The COB-wait tests read COB several times (wait, release check, log).
+        verify(loopHub, atMost(6)).carbsOnboard
         verify(loopHub, atMost(3)).lowGlucoseMark
         verify(loopHub, atMost(3)).highGlucoseMark
+        verify(loopHub, atMost(3)).temporaryTarget
+        verify(loopHub, atMost(3)).isLoopEnabled
         verifyNoMoreInteractions(loopHub)
     }
 
@@ -326,10 +345,11 @@ class GarminPluginTest : TestBaseWithProfile() {
         val result = gp.onGetBloodGlucose(uri)
         assertEquals(
             """{"encodedGlucose":"0A+6AQ==",""" +
-                """"remainingInsulin":3.14,"remainingBasalInsulin":2.71,""" +
+                """"remainingInsulin":3.14,"remainingBasalInsulin":2.71,"carbsOnBoard":0.0,""" +
                 """"lowGlucoseMark":70,"highGlucoseMark":130,""" +
                 """"glucoseUnit":"mmoll","temporaryBasalRate":0.8,""" +
-                """"profile":"D","connected":true}""",
+                """"temporaryTargetActive":false,"connected":true,"loopEnabled":false,""" +
+                """"timestamp":10,"profile":"D"}""",
             result.toString()
         )
         verify(loopHub).getGlucoseValues(from, true)
@@ -364,9 +384,10 @@ class GarminPluginTest : TestBaseWithProfile() {
         val result = gp.onGetBloodGlucose(uri)
         assertEquals(
             """{"encodedGlucose":"/wS6AQ==",""" +
-                """"remainingInsulin":3.14,"remainingBasalInsulin":0.0,""" +
+                """"remainingInsulin":3.14,"remainingBasalInsulin":0.0,"carbsOnBoard":0.0,""" +
                 """"glucoseUnit":"mmoll","temporaryBasalRate":0.8,""" +
-                """"profile":"D","connected":true}""",
+                """"temporaryTargetActive":false,"connected":true,"loopEnabled":false,""" +
+                """"timestamp":10,"profile":"D"}""",
             result.toString()
         )
         verify(gp.newValue).awaitNanos(anyLong())
@@ -483,10 +504,266 @@ class GarminPluginTest : TestBaseWithProfile() {
         verify(loopHub, atLeastOnce()).glucoseUnit
     }
 
+    // ---- Push-to-pull (V2) -------------------------------------------------------
+
+    private val appId = "0123456789ABCDEF0123456789ABCDEF"
+    private fun v2Message(key: String = "") = mapOf<String, Any>("key" to key, "command" to "updateWatch")
+
+    /** The loopHub reads of one onGetBloodGlucose() call that the tests don't check one by one. */
+    private fun verifyGetBloodGlucoseReads() {
+        verify(loopHub).getGlucoseValues(any(), eq(true))
+        verify(loopHub).isConnected
+        verify(loopHub).glucoseUnit
+    }
+
+    @Test
+    fun requestHandler_KeyWithPlus() {
+        // A "+" in the key reaches AAPS as %2B and must be decoded once. Decoding
+        // uri.query (already decoded) a second time turned it into a space (401).
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("a+b")
+        val uri = URI("http://foo?key=a%2Bb")
+        val handler = gp.requestHandler { "OK" }
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
+    }
+
+    @Test
+    fun requestHandler_KeyWithLiteralPlus() {
+        // A client that does not encode the key: "+" must not become a space.
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("a+b")
+        val uri = URI("http://foo?key=a+b")
+        val handler = gp.requestHandler { "OK" }
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
+    }
+
+    @Test
+    fun requestHandler_KeyWithPercent() {
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("100%")
+        val uri = URI("http://foo?key=100%25")
+        val handler = gp.requestHandler { "OK" }
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
+    }
+
+    @Test
+    fun onGetBloodGlucose_RegistersV2App() {
+        whenever(loopHub.carbsOnboard).thenReturn(5.0)
+        val result = gp.onGetBloodGlucose(createUri(mapOf("appId" to appId.lowercase())))
+        assertEquals(setOf(appId), gp.garminV2Push.getActiveV2AppIds())
+        Truth.assertThat(result.toString()).contains(""""carbsOnBoard":5.0""")
+        // The plugin was never started (onStart), so the /get must not start a messenger.
+        assertNull(gp.garminMessengerField)
+        verifyGetBloodGlucoseReads()
+    }
+
+    @Test
+    fun onGetBloodGlucose_MalformedAppIdIgnored() {
+        whenever(loopHub.carbsOnboard).thenReturn(5.0)
+        gp.onGetBloodGlucose(createUri(mapOf("appId" to "not-an-app-id")))
+        assertEquals(emptySet<String>(), gp.garminV2Push.getActiveV2AppIds())
+        verifyGetBloodGlucoseReads()
+    }
+
+    @Test
+    fun onNewBloodGlucose_PushesToActiveApp() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        gp.garminV2Push.registerOrTouchDynamicApp(appId)
+        gp.onNewBloodGlucose(EventNewBG(clock.millis()))
+        verify(messenger).sendMessage(eq(v2Message()), eq(setOf(appId)))
+
+        // Same BG again: no second push.
+        gp.onNewBloodGlucose(EventNewBG(clock.millis()))
+        verify(messenger, times(1)).sendMessage(eq(v2Message()), eq(setOf(appId)))
+    }
+
+    @Test
+    fun onNewBloodGlucose_NoActiveApp() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        gp.onNewBloodGlucose(EventNewBG(clock.millis()))
+        verifyNoInteractions(messenger)
+    }
+
+    @Test
+    fun onNewBloodGlucose_PluginStopped_NoNewMessenger() {
+        // A push that is still under way when the plugin stops must not start a new
+        // messenger: onStop has disposed the old one, and nothing would dispose this one.
+        // The plugin here was never started, which looks the same to the push.
+        gp.garminV2Push.registerOrTouchDynamicApp(appId)
+        gp.onNewBloodGlucose(EventNewBG(clock.millis()))
+        assertNull(gp.garminMessengerField)
+    }
+
+    @Test
+    fun onNewBloodGlucose_AppOutsidePushWindow() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        gp.garminV2Push.registerOrTouchDynamicApp(appId)
+        // Last /get 16 min ago - the window is 15 min.
+        gp.clock = Clock.offset(clock, Duration.ofMinutes(16))
+        gp.onNewBloodGlucose(EventNewBG(gp.clock.millis()))
+        verifyNoInteractions(messenger)
+    }
+
+    @Test
+    fun onLoopDataChanged_CobPresent_PushesThrottled() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        gp.garminV2Push.registerOrTouchDynamicApp(appId)
+        whenever(loopHub.carbsOnboard).thenReturn(10.0)
+
+        gp.onNewBloodGlucose(EventNewBG(clock.millis()))  // BG push
+        gp.onLoopDataChanged()                             // < 3 s later: throttled
+        verify(messenger, times(1)).sendMessage(eq(v2Message()), eq(setOf(appId)))
+
+        gp.clock = Clock.offset(clock, Duration.ofSeconds(4))
+        gp.onLoopDataChanged()                             // 4 s later: sent
+        verify(messenger, times(2)).sendMessage(eq(v2Message()), eq(setOf(appId)))
+        verify(loopHub, atLeastOnce()).carbsOnboard
+    }
+
+    @Test
+    fun onLoopDataChanged_CobMissing_WaitsForCalculation() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        gp.garminV2Push.registerOrTouchDynamicApp(appId)
+        whenever(loopHub.carbsOnboard).thenReturn(null)
+
+        gp.onLoopDataChanged()
+        verify(messenger, never()).sendMessage(any<Any>(), any<Collection<String>>())
+
+        // A calculation that ends without COB does not release the push.
+        gp.onCalculationFinished()
+        verify(messenger, never()).sendMessage(any<Any>(), any<Collection<String>>())
+
+        whenever(loopHub.carbsOnboard).thenReturn(12.0)
+        gp.onCalculationFinished()
+        verify(messenger, times(1)).sendMessage(eq(v2Message()), eq(setOf(appId)))
+
+        // Released once - a further calculation does not push again.
+        gp.onCalculationFinished()
+        verify(messenger, times(1)).sendMessage(eq(v2Message()), eq(setOf(appId)))
+        verify(loopHub, atLeastOnce()).carbsOnboard
+        gp.onStop()
+    }
+
+    @Test
+    fun onGetBloodGlucose_CobMissing_RePushWhenCobBack() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        whenever(loopHub.carbsOnboard).thenReturn(null)
+
+        // A push watch face is served without COB ...
+        val result = gp.onGetBloodGlucose(createUri(mapOf("appId" to appId)))
+        Truth.assertThat(result.toString()).doesNotContain("carbsOnBoard")
+        verify(messenger, never()).sendMessage(any<Any>(), any<Collection<String>>())
+
+        // ... and gets one more push when COB is back, even < 3 s after the last push.
+        whenever(loopHub.carbsOnboard).thenReturn(12.0)
+        gp.onCalculationFinished()
+        verify(messenger, times(1)).sendMessage(eq(v2Message()), eq(setOf(appId)))
+        verify(loopHub, atLeastOnce()).carbsOnboard
+        verifyGetBloodGlucoseReads()
+        gp.onStop()
+    }
+
+    @Test
+    fun onGetBloodGlucose_CobMissing_NoRePushForNonPushApp() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        whenever(loopHub.carbsOnboard).thenReturn(null)
+        gp.onGetBloodGlucose(createUri(emptyMap()))  // no appId: plain pull client
+        whenever(loopHub.carbsOnboard).thenReturn(12.0)
+        gp.onCalculationFinished()
+        verifyNoInteractions(messenger)
+        verify(loopHub, atLeastOnce()).carbsOnboard
+        verifyGetBloodGlucoseReads()
+    }
+
+    // waitForCob keeps its four fields under one lock. A /get without COB (re-push,
+    // send on timeout only if COB is back) and a loop push (send on timeout anyway)
+    // can arm the wait in either order - the loop push's "send anyway" must win.
+    @Test
+    fun cobRePushThenLoopPush_TimeoutSendsWithoutCob() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        whenever(loopHub.carbsOnboard).thenReturn(null)
+
+        gp.onGetBloodGlucose(createUri(mapOf("appId" to appId)))  // re-push armed
+        gp.onLoopDataChanged()                                      // loop push joins the wait
+        gp.onLoopPushTimeout()
+        verify(messenger, times(1)).sendMessage(eq(v2Message()), eq(setOf(appId)))
+        verify(loopHub, atLeastOnce()).carbsOnboard
+        verifyGetBloodGlucoseReads()
+        gp.onStop()
+    }
+
+    @Test
+    fun loopPushThenCobRePush_TimeoutSendsWithoutCob() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        gp.garminV2Push.registerOrTouchDynamicApp(appId)
+        whenever(loopHub.carbsOnboard).thenReturn(null)
+
+        gp.onLoopDataChanged()                                      // loop push waits
+        gp.onGetBloodGlucose(createUri(mapOf("appId" to appId)))  // re-push must not downgrade it
+        gp.onLoopPushTimeout()
+        verify(messenger, times(1)).sendMessage(eq(v2Message()), eq(setOf(appId)))
+        verify(loopHub, atLeastOnce()).carbsOnboard
+        verifyGetBloodGlucoseReads()
+        gp.onStop()
+    }
+
+    @Test
+    fun cobRePushOnly_TimeoutWithoutCob_Dropped() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        whenever(loopHub.carbsOnboard).thenReturn(null)
+
+        gp.onGetBloodGlucose(createUri(mapOf("appId" to appId)))
+        gp.onLoopPushTimeout()
+        verify(messenger, never()).sendMessage(any<Any>(), any<Collection<String>>())
+        verify(loopHub, atLeastOnce()).carbsOnboard
+        verifyGetBloodGlucoseReads()
+        gp.onStop()
+    }
+
+    @Test
+    fun loopPushReleased_LateTimeoutDoesNotPushAgain() {
+        val messenger = mock<GarminMessenger>()
+        gp.garminMessengerField = messenger
+        gp.garminV2Push.registerOrTouchDynamicApp(appId)
+        whenever(loopHub.carbsOnboard).thenReturn(null)
+
+        gp.onLoopDataChanged()
+        whenever(loopHub.carbsOnboard).thenReturn(12.0)
+        gp.onCalculationFinished()
+        gp.onLoopPushTimeout()  // a timeout that already fired must not push a second time
+        verify(messenger, times(1)).sendMessage(eq(v2Message()), eq(setOf(appId)))
+        verify(loopHub, atLeastOnce()).carbsOnboard
+        gp.onStop()
+    }
+
     @Test
     fun preferenceScreenTest() {
         val screen = preferenceManager.createPreferenceScreen(context)
         gp.addPreferenceScreen(preferenceManager, screen, context, null)
         Truth.assertThat(screen.preferenceCount).isGreaterThan(0)
+    }
+
+    @Test
+    fun maskKey() {
+        assertEquals("/get?appId=A&key=***&trig=push", GarminPlugin.maskKey("/get?appId=A&key=000369&trig=push"))
+        assertEquals("/get?key=***", GarminPlugin.maskKey("/get?key=a%2Bb"))
+        // An empty key stays visible - it shows that no key is set.
+        assertEquals("/get?appId=A&key=&trig=push", GarminPlugin.maskKey("/get?appId=A&key=&trig=push"))
+        // Only the "key" parameter, not one that ends with "key".
+        assertEquals("/get?appkey=x&key=***", GarminPlugin.maskKey("/get?appkey=x&key=y"))
+    }
+
+    @Test
+    fun receiveHeartRate_NoHeartRateInRequest() {
+        // A /get without hr/hrStart/hrEnd (most of them) stores nothing.
+        gp.receiveHeartRate(createUri(mapOf("appId" to appId, "trig" to "push")))
+        verify(loopHub, never()).storeHeartRate(any(), any(), any(), anyOrNull())
     }
 }
