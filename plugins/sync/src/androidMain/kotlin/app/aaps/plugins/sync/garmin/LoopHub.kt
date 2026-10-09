@@ -70,11 +70,16 @@ interface LoopHub {
         device: String?
     )
 
-    /** Stores the steps of one 5-minute interval. */
+    /** Stores the steps of the last minutes at [timestamp], one record per window.
+     *
+     * @param stepsPerWindow steps by window length in minutes (5, 10, 15, 30, 60, 180).
+     *   Each window gets its own record with that length as duration and all given
+     *   counts, the way the Wear OS app stores steps. The Automation "Steps count"
+     *   trigger reads the record whose duration is the window it checks.
+     */
     fun storeStepsCount(
-        samplingStart: Instant,
-        samplingEnd: Instant,
-        steps5min: Int,
+        timestamp: Instant,
+        stepsPerWindow: Map<Int, Int>,
         device: String?
     )
 }
