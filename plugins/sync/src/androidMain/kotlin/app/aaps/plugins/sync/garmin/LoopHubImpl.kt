@@ -5,6 +5,7 @@ import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.HR
 import app.aaps.core.data.model.RM
+import app.aaps.core.data.model.SC
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
@@ -30,6 +31,7 @@ import dev.zacsweers.metro.ContributesBinding
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
 import io.reactivex.rxjava3.disposables.CompositeDisposable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -88,6 +90,10 @@ class LoopHubImpl(
     /** Returns true if the pump is connected. */
     override val isConnected: Boolean get() = runBlocking { loop.runningMode() } != RM.Mode.DISCONNECTED_PUMP
 
+    /** Returns true if the loop is enabled and actually running. */
+    override val isLoopEnabled: Boolean
+        get() = loop.isEnabled() && runBlocking { loop.runningMode() }.isLoopRunning()
+
     /** Returns true if the current profile is set of a limited amount of time. */
     override val isTemporaryProfile: Boolean
         get() {
@@ -113,6 +119,9 @@ class LoopHubImpl(
         get() = profileUtil.convertToMgdl(
             preferences.get(UnitDoubleKey.OverviewHighMark), glucoseUnit
         )
+
+    override val temporaryTarget
+        get() = runBlocking { persistenceLayer.getTemporaryTargetActiveAt(clock.millis()) }
 
     /** Tells the loop algorithm that the pump is physically connected. */
     override fun connectPump() {
@@ -175,6 +184,44 @@ class LoopHubImpl(
         )
         appScope.launch {
             persistenceLayer.insertOrUpdateHeartRates(listOf(hr))
+        }
+    }
+
+    override fun storeStepsCount(
+        timestamp: Instant,
+        stepsPerWindow: Map<Int, Int>,
+        device: String?
+    ) {
+        val records = stepsCountRecords(timestamp, stepsPerWindow, device)
+        if (records.isEmpty()) return
+        appScope.launch {
+            try {
+                val result = persistenceLayer.insertOrUpdateStepsCounts(records)
+                aapsLogger.debug(LTag.GARMIN, "Steps stored in DB: ${result.inserted.size} records, $stepsPerWindow at $timestamp")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                aapsLogger.error(LTag.GARMIN, "Failed to store steps: ${e.message}")
+            }
+        }
+    }
+
+    /** One record per window, all with the same counts; see [LoopHub.storeStepsCount]. */
+    private fun stepsCountRecords(timestamp: Instant, stepsPerWindow: Map<Int, Int>, device: String?): List<SC> {
+        fun steps(window: Int) = stepsPerWindow[window] ?: 0
+        return stepsPerWindow.keys.sorted().map { window ->
+            SC(
+                duration = window * 60_000L,
+                timestamp = timestamp.toEpochMilli(),
+                steps5min = steps(5),
+                steps10min = steps(10),
+                steps15min = steps(15),
+                steps30min = steps(30),
+                steps60min = steps(60),
+                steps180min = steps(180),
+                device = device ?: "Garmin",
+                dateCreated = clock.millis(),
+            )
         }
     }
 }

@@ -2,8 +2,14 @@ package app.aaps.plugins.sync.garmin
 
 import android.content.Context
 import androidx.annotation.VisibleForTesting
+import app.aaps.core.data.model.BS
+import app.aaps.core.data.model.CA
+import app.aaps.core.data.model.EB
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
+import app.aaps.core.data.model.RM
+import app.aaps.core.data.model.TB
+import app.aaps.core.data.model.TT
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
@@ -14,6 +20,7 @@ import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
 import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.collectResilient
+import app.aaps.core.interfaces.sharedPreferences.SP
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.compose.icons.IcPluginGarmin
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
@@ -31,9 +38,13 @@ import dev.zacsweers.metro.SingleIn
 import dev.zacsweers.metro.binding
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.math.MathContext
 import java.math.RoundingMode
@@ -48,12 +59,17 @@ import java.util.concurrent.locks.Condition
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.math.roundToInt
+import kotlin.reflect.KClass
 
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
  * carbs, heart rate and pump disconnect events from the device. It communicates
  * via HTTP on localhost or Garmin's native CIQ library.
+ *
+ * The V2 push-to-pull machinery (dynamic app discovery, push throttling)
+ * lives in GarminV2Push - see that file for
+ * why it was split out and how it and this class divide the work.
  */
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
 @IntKey(370)
@@ -63,6 +79,7 @@ class GarminPlugin(
     aapsLogger: AAPSLogger,
     resourceHelper: ResourceHelper,
     preferences: Preferences,
+    private val sp: SP,
     private val context: Context,
     private val loopHub: LoopHub,
     private val persistenceLayer: PersistenceLayer,
@@ -79,6 +96,35 @@ class GarminPlugin(
 
     /** HTTP Server for local HTTP server communication (device app requests values) .*/
     private var server: HttpServer? = null
+
+    /** Dynamic app discovery and push throttling for the V2
+     *  push-to-pull path. See GarminV2Push.kt. */
+    @VisibleForTesting
+    val garminV2Push = GarminV2Push(aapsLogger, sp) { clock.millis() }
+
+    /** Step counts from the watch (/get?steps=...). See GarminSteps.kt. */
+    @VisibleForTesting
+    val garminSteps = GarminSteps(aapsLogger, sp, loopHub, { clock })
+
+    companion object {
+        // The AAPS key in a logged request (?key=... / &key=...).
+        private val KEY_IN_QUERY = Regex("(?<=[?&])key=[^&]+")
+
+        /** Replaces a non-empty AAPS key in [s] with "***", so logs can be shared. */
+        @VisibleForTesting
+        fun maskKey(s: String) = KEY_IN_QUERY.replace(s, "key=***")
+
+        // Database types whose changes trigger a V2 push (debounced). This replaces the
+        // RxBus events used by the old (master) AAPS (EventTreatmentChange, EventTempTargetChange,
+        // EventTempBasalChange, EventRunningModeChange), which no longer exist.
+        // GV is not here: a new glucose value pushes at once in onNewBloodGlucose().
+        private val PUSH_TRIGGER_TYPES: Set<KClass<*>> =
+            setOf(BS::class, CA::class, TT::class, TB::class, EB::class, RM::class)
+
+        // Longer than GarminV2Push.MIN_PUSH_INTERVAL_MS (3 s), so a loop result that arrives
+        // right after a new BG is not throttled away by the BG push.
+        private const val PUSH_TRIGGER_DEBOUNCE_MS = 3_500L
+    }
 
     @VisibleForTesting
     var garminMessengerField: GarminMessenger? = null
@@ -106,6 +152,11 @@ class GarminPlugin(
         "4BDDCC1740084A1FAB83A3B2E2FCF55B" to "GlucoseWidget",
     )
 
+    private fun onMessengerConnected() {
+        aapsLogger.info(LTag.GARMIN, "Garmin messenger connected")
+        scope.launch { sendPhoneAppMessageV2() }
+    }
+
     @VisibleForTesting
     var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -121,20 +172,27 @@ class GarminPlugin(
     private val garminAapsKey get() = preferences.get(GarminStringKey.RequestKey)
 
     private fun setupGarminMessenger() {
-        resetGarminMessenger()
-        createGarminMessenger()
+        val old: GarminMessenger?
+        synchronized(this) {
+            old = garminMessengerField
+            garminMessengerField = createGarminMessenger()
+        }
+        old?.dispose()
     }
 
     private fun createGarminMessenger(): GarminMessenger {
-        val enableDebug = false
+        val enableDebug = false // sp.getBoolean("communication_ciq_debug_mode", false)
         aapsLogger.info(LTag.GARMIN, "initialize IQ messenger in debug=$enableDebug")
         return GarminMessenger(
-            aapsLogger, context, glucoseAppIds, { _, _ -> }, true, enableDebug
+            aapsLogger, context, glucoseAppIds, { _, _ -> }, true, enableDebug,
+            onConnected = ::onMessengerConnected
         )
     }
 
+    @OptIn(FlowPreview::class)
     override suspend fun onStart() {
         super.onStart()
+        running = true
         aapsLogger.info(LTag.GARMIN, "start")
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         preferences.observe(GarminBooleanKey.LocalHttpServer)
@@ -145,12 +203,58 @@ class GarminPlugin(
             .collectResilient(scope, aapsLogger, LTag.GARMIN) { setupHttpServer() }
         preferences.observe(GarminStringKey.RequestKey)
             .drop(1)
-            .collectResilient(scope, aapsLogger, LTag.GARMIN) { sendPhoneAppMessage() }
+            .collectResilient(scope, aapsLogger, LTag.GARMIN) {
+                sendPhoneAppMessage()
+                sendPhoneAppMessageV2()
+            }
         persistenceLayer.observeChanges(GV::class)
             .collectResilient(scope, aapsLogger, LTag.GARMIN, block = ::onNewBloodGlucose)
+        // Treatments, carbs, temp targets, temp basals and running mode changes push to the
+        // watch. They are debounced: one loop cycle can change several of them within
+        // milliseconds (an SMB both stores a bolus and changes the temp basal), and one push
+        // is enough.
+        persistenceLayer.observeAnyChange()
+            .filter { changed -> changed.any { it in PUSH_TRIGGER_TYPES } }
+            .debounce(PUSH_TRIGGER_DEBOUNCE_MS)
+            .collectResilient(scope, aapsLogger, LTag.GARMIN) { onLoopDataChanged() }
         setupHttpServer()
-        if (garminAapsKey.isNotEmpty())
+        // As in master, the Connect IQ messenger (the binding to Garmin Connect) only
+        // runs when something uses it: an AAPS key is set - master sends it to the watch
+        // apps - or a push-to-pull watch face has polled within the last 15 min.
+        // Otherwise AAPS stays out of Garmin Connect, as before, for users of HTTP-only
+        // watch faces, data fields or xDrip. A push watch face that polls later starts
+        // it (ensureGarminMessenger in onGetBloodGlucose).
+        if (garminAapsKey.isNotEmpty() || garminV2Push.getActiveV2AppIds().isNotEmpty()) {
             setupGarminMessenger()
+        }
+    }
+
+    /** False after onStop. See ensureGarminMessenger. */
+    @Volatile private var running = false
+
+    /** Starts the messenger if it is not running yet. Called when a push-to-pull
+     *  watch face polls, so the next push can reach it: binding to Garmin Connect
+     *  takes a moment, and the next push (new BG) comes up to 5 min later. */
+    private fun ensureGarminMessenger() {
+        // running: a /get still in progress while the plugin stops must not start
+        // a new messenger after onStop has disposed the old one.
+        if (!running || garminMessengerField != null) return
+        synchronized(this) {
+            // Checked again under the lock: onStop may have run since the check above.
+            // resetGarminMessenger takes the same lock, so a messenger made here is
+            // either disposed by it or not made at all.
+            if (running && garminMessengerField == null) {
+                aapsLogger.info(LTag.GARMIN, "push watch face registered, starting IQ messenger")
+                garminMessengerField = createGarminMessenger()
+            }
+        }
+    }
+
+    /** The messenger for a V2 push: the one that runs, or a new one while the plugin
+     *  runs. Null after onStop - a push that was still under way when the plugin
+     *  stopped must not start a new messenger, as nothing would dispose it. */
+    private fun messengerForPush(): GarminMessenger? = synchronized(this) {
+        garminMessengerField ?: if (running) garminMessenger else null
     }
 
     private fun setupHttpServer() {
@@ -179,9 +283,10 @@ class GarminPlugin(
     }
 
     override suspend fun onStop() {
+        running = false
         scope.cancel()
-        garminMessengerField?.dispose()
         aapsLogger.info(LTag.GARMIN, "Stop")
+        resetGarminMessenger()
         server?.close()
         server = null
         super.onStop()
@@ -195,12 +300,27 @@ class GarminPlugin(
     @VisibleForTesting
     fun onNewBloodGlucose(glucoseValues: List<GV>) {
         val timestamp = glucoseValues.maxOfOrNull { it.timestamp } ?: return
-        aapsLogger.info(LTag.GARMIN, "onNewBloodGlucose ${Date(timestamp)}")
+        var isNew = false
         valueLock.withLock {
             if ((lastGlucoseValueTimestamp ?: 0) >= timestamp) return
             lastGlucoseValueTimestamp = timestamp
+            isNew = true
             newValue.signalAll()
         }
+        // Push outside the lock - sendPhoneAppMessageV2() talks to the Connect IQ
+        // SDK, which shouldn't happen while holding valueLock (used elsewhere for
+        // the HTTP long-poll wait).
+        if (isNew) {
+            aapsLogger.info(LTag.GARMIN, "onNewBloodGlucose ${Date(timestamp)}")
+            sendPhoneAppMessageV2(force = true)
+        }
+    }
+
+    /** Treatment, carbs, temp target, temp basal or running mode changed (debounced). */
+    @VisibleForTesting
+    fun onLoopDataChanged() {
+        aapsLogger.info(LTag.GARMIN, "loop push")
+        sendPhoneAppMessageV2()
     }
 
     @VisibleForTesting
@@ -217,6 +337,22 @@ class GarminPlugin(
 
     private fun sendPhoneAppMessage() {
         garminMessenger.sendMessage(getGlucoseMessage())
+    }
+
+    private fun sendPhoneAppMessageV2(force: Boolean = false) {
+        val now = clock.millis()
+        val prev = garminV2Push.lastV2PushAt.get()
+        if (!force && now - prev < GarminV2Push.MIN_PUSH_INTERVAL_MS) return
+
+        // Only apps that have polled within PUSH_ACTIVE_WINDOW_MS are pushed to.
+        // An app that has fallen out of that window is not running, so a push cannot
+        // reach it anyway - it re-registers itself the moment it polls again.
+        val activeIds = garminV2Push.getActiveV2AppIds()
+        if (activeIds.isEmpty()) return
+
+        if (!garminV2Push.lastV2PushAt.compareAndSet(prev, now)) return
+        val messenger = messengerForPush() ?: return
+        messenger.sendMessage(garminV2Push.getGlucoseMessageV2(garminAapsKey), activeIds)
     }
 
     @VisibleForTesting
@@ -273,17 +409,21 @@ class GarminPlugin(
 
     @VisibleForTesting
     fun requestHandler(action: (URI) -> CharSequence) = { caller: SocketAddress, uri: URI, _: String? ->
+        // Same rule as upstream (master) AAPS, for backward compatibility with older watch
+        // faces and data fields: with no key set, every endpoint is open (including /carbs
+        // and /connect); with a key set, every endpoint needs it. On a wrong key the key is
+        // pushed to the watch apps (V1 message), so an old watch face can pick it up.
         val key = garminAapsKey
         val deviceKey = getQueryParameter(uri, "key")
         if (key.isNotEmpty() && key != deviceKey) {
-            aapsLogger.warn(LTag.GARMIN, "Invalid AAPS Key from $caller, got '$deviceKey' want '$key' $uri")
+            aapsLogger.warn(LTag.GARMIN, "Invalid AAPS Key from $caller for ${uri.path}")
             sendPhoneAppMessage()
             Thread.sleep(1000L)
             HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
         } else {
-            aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri")
+            aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}")
             HttpURLConnection.HTTP_OK to action(uri).also {
-                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: $uri, result: $it")
+                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}, result: $it")
             }
         }
     }
@@ -295,13 +435,29 @@ class GarminPlugin(
     @VisibleForTesting
     fun onGetBloodGlucose(uri: URI): CharSequence {
         receiveHeartRate(uri)
-        val profileName = loopHub.currentProfileName
+        garminSteps.receive(uri)
+
+        val rawAppId = getQueryParameter(uri, "appId")
+        if (!rawAppId.isNullOrEmpty()) {
+            val appId = rawAppId.uppercase()
+            if (garminV2Push.matchesAppIdFormat(appId)) {
+                garminV2Push.registerOrTouchDynamicApp(appId)
+                ensureGarminMessenger()
+            } else {
+                aapsLogger.debug(LTag.GARMIN, "Ignoring malformed appId: $rawAppId")
+            }
+        }
+
         val waitSec = getQueryParameter(uri, "wait", 0L)
         val glucoseValues = getGlucoseValues(Duration.ofSeconds(waitSec))
         val jo = JsonObject()
         jo.addProperty("encodedGlucose", encodedGlucose(glucoseValues))
         jo.addProperty("remainingInsulin", loopHub.insulinOnboard)
         jo.addProperty("remainingBasalInsulin", loopHub.insulinBasalOnboard)
+        // Left out while AAPS has no COB (displayCob is null, e.g. before the first
+        // IOB/COB calculation after a start). Sending 0.0 would make the watch show 0 g;
+        // without the field the watch keeps the last value.
+        loopHub.carbsOnboard?.let { jo.addProperty("carbsOnBoard", it) }
         loopHub.lowGlucoseMark.takeIf { it > 0.0 }?.let {
             jo.addProperty("lowGlucoseMark", it.roundToInt())
         }
@@ -312,15 +468,25 @@ class GarminPlugin(
         loopHub.temporaryBasal.also {
             if (!it.isNaN()) jo.addProperty("temporaryBasalRate", it)
         }
-        jo.addProperty("profile", profileName.first().toString())
+        loopHub.temporaryTarget?.let {
+            jo.addProperty("temporaryTargetActive", true)
+            jo.addProperty("temporaryTargetLow", it.lowTarget.roundToInt())
+            jo.addProperty("temporaryTargetHigh", it.highTarget.roundToInt())
+            jo.addProperty("temporaryTargetReason", it.reason.text)
+            jo.addProperty("temporaryTargetEndSec", it.end / 1000)
+            jo.addProperty("temporaryTargetDurationMin", it.duration / 60000)
+        } ?: jo.addProperty("temporaryTargetActive", false)
         jo.addProperty("connected", loopHub.isConnected)
+        jo.addProperty("loopEnabled", loopHub.isLoopEnabled)
+        jo.addProperty("timestamp", clock.instant().epochSecond)
+        jo.addProperty("profile", loopHub.currentProfileName.first().toString())
         return jo.toString()
     }
 
-    private fun getQueryParameter(uri: URI, name: String) = (uri.query ?: "")
-        .split("&")
-        .map { kv -> kv.split("=") }
-        .firstOrNull { kv -> kv.size == 2 && kv[0] == name }?.get(1)
+    // Decodes each value exactly once (see URI.queryParameter in GarminQuery.kt).
+    // POST form bodies stay encoded, as in master - HttpServer builds their URI
+    // with extra quoting.
+    private fun getQueryParameter(uri: URI, name: String): String? = uri.queryParameter(name)
 
     private fun getQueryParameter(
         uri: URI,
@@ -377,6 +543,9 @@ class GarminPlugin(
         samplingStart: Instant, samplingEnd: Instant,
         avg: Int, device: String?, test: Boolean
     ) {
+        // Most requests carry no heart rate at all (no hr/hrStart parameters) - nothing
+        // to log or store then.
+        if (avg <= 0 && samplingStart == Instant.ofEpochMilli(0L)) return
         aapsLogger.info(LTag.GARMIN, "average heart rate $avg BPM $samplingStart to $samplingEnd")
         if (test) return
         if (avg > 10 && samplingStart > Instant.ofEpochMilli(0L) && samplingEnd > samplingStart) {
@@ -415,7 +584,9 @@ class GarminPlugin(
     }
 
     private fun glucoseSlopeMgDlPerMilli(glucose1: GV, glucose2: GV): Double {
-        return (glucose2.value - glucose1.value) / (glucose2.timestamp - glucose1.timestamp)
+        val dt = glucose2.timestamp - glucose1.timestamp
+        if (dt <= 0L) return 0.0
+        return (glucose2.value - glucose1.value) / dt
     }
 
     /** Returns glucose values in Nightscout/Xdrip format. */
@@ -479,9 +650,7 @@ class GarminPlugin(
             GarminBooleanKey.LocalHttpServer,
             GarminIntKey.LocalHttpPort,
             GarminStringKey.RequestKey
-
         ),
         icon = pluginDescription.icon
     )
-
 }

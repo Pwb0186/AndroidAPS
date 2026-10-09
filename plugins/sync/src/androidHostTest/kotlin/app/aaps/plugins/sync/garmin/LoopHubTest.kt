@@ -7,6 +7,7 @@ import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.HR
 import app.aaps.core.data.model.ICfg
 import app.aaps.core.data.model.RM
+import app.aaps.core.data.model.SC
 import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TB
 import app.aaps.core.data.model.TrendArrow
@@ -36,6 +37,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -315,5 +318,64 @@ class LoopHubTest : TestBase() {
         )
         kotlinx.coroutines.delay(100.milliseconds) // Give time for GlobalScope.launch to complete
         verify(persistenceLayer).insertOrUpdateHeartRates(listOf(hr))
+    }
+
+    @Test
+    fun testIsLoopEnabled() = runTest {
+        whenever(loop.isEnabled()).thenReturn(true)
+        whenever(loop.runningMode()).thenReturn(RM.Mode.CLOSED_LOOP)
+        assertEquals(true, loopHub.isLoopEnabled)
+        verify(loop).isEnabled()
+        verify(loop).runningMode()
+    }
+
+    @Test
+    fun testIsLoopEnabled_PluginDisabled() = runTest {
+        whenever(loop.isEnabled()).thenReturn(false)
+        assertFalse(loopHub.isLoopEnabled)
+        verify(loop).isEnabled()
+    }
+
+    @Test
+    fun testTemporaryTargetNone() = runTest {
+        whenever(persistenceLayer.getTemporaryTargetActiveAt(clock.millis())).thenReturn(null)
+        assertNull(loopHub.temporaryTarget)
+        verify(persistenceLayer).getTemporaryTargetActiveAt(clock.millis())
+    }
+
+    /** The record for one window: the window as duration, the same counts in all. */
+    private fun stepsCount(window: Int) = SC(
+        duration = window * 60_000L,
+        timestamp = 1_301_000L,
+        steps5min = 120,
+        steps10min = 200,
+        steps15min = 0,
+        steps30min = 0,
+        steps60min = 0,
+        steps180min = 0,
+        device = "Garmin",
+        dateCreated = clock.millis(),
+    )
+
+    @Test
+    fun testStoreStepsCount() = runTest {
+        val records = listOf(stepsCount(5), stepsCount(10))
+        whenever(persistenceLayer.insertOrUpdateStepsCounts(records)).thenReturn(
+            PersistenceLayer.TransactionResult()
+        )
+        // One record per window; device null -> stored as "Garmin"
+        loopHub.storeStepsCount(Instant.ofEpochMilli(1_301_000), mapOf(10 to 200, 5 to 120), null)
+        kotlinx.coroutines.delay(100.milliseconds) // Give time for appScope.launch to complete
+        verify(persistenceLayer).insertOrUpdateStepsCounts(records)
+    }
+
+    @Test
+    fun testStoreStepsCount_ErrorIsCaught() = runTest {
+        // A failing insert is logged; it must not escape appScope.launch.
+        val records = listOf(stepsCount(5), stepsCount(10))
+        whenever(persistenceLayer.insertOrUpdateStepsCounts(records)).thenThrow(IllegalStateException("db"))
+        loopHub.storeStepsCount(Instant.ofEpochMilli(1_301_000), mapOf(5 to 120, 10 to 200), null)
+        kotlinx.coroutines.delay(100.milliseconds)
+        verify(persistenceLayer).insertOrUpdateStepsCounts(records)
     }
 }
