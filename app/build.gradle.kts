@@ -134,9 +134,10 @@ android {
     productFlavors {
         create("full") {
             isDefault = true
-            applicationId = "info.nightscout.androidaps"
+            // Changed so this test build installs next to the normal AAPS instead of replacing it.
+            applicationId = "info.nightscout.androidaps.v4test"
             dimension = "standard"
-            resValue("string", "app_name", "AAPS")
+            resValue("string", "app_name", "AAPS V4")
             versionName = Versions.appVersion
             manifestPlaceholders["appIcon"] = "@mipmap/ic_launcher"
             manifestPlaceholders["appIconRound"] = "@mipmap/ic_launcher_round"
@@ -261,7 +262,6 @@ dependencies {
             "pumpcontrolImplementation"(project(it.path))
         }
 
-    implementation(libs.androidx.core)
     implementation(libs.androidx.lifecycle.process)
 
     testImplementation(project(":shared:tests"))
