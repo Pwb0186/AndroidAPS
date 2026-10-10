@@ -27,8 +27,11 @@ the steps in that window. Rules for the total:
 - More than 12 minutes since the last value: only the starting point moves (we do not
   know when those steps were taken).
 - At local midnight the watch resets its counter. This is handled.
-- A lower value on the same day (watch restart, other watch face): only the starting
-  point moves.
+- A lower value on the same day (for example a new watch, or a second watch sending
+  to the same AAPS): only the starting point moves.
+- Only one watch should send steps to an AAPS. A second watch with a higher total is
+  counted as steps. When you switch watch, wait at least 12 minutes after the last
+  steps were sent, or turn off "Send steps to AAPS" in the watch face settings.
 - A delta of 0 steps is stored too, so a rule like "fewer than 100 steps" works.
 - The steps of a reading are spread evenly over the time since the last reading.
 - A window is only stored when the history covers all of it. After a start, a long
