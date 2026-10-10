@@ -8,6 +8,9 @@ This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes 
 **Branch:** `GarminPush+Steps-V4.0.0-beta1` (AAPS `4.0.0-beta1` + the Garmin changes in one commit).
 **Watch face:** [aaps-garmin-demo-watchface](https://github.com/Pwb0186/aaps-garmin-demo-watchface),
 a Connect IQ watch face that uses all of this.
+**Steps only:** branch
+[`GarminSteps-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminSteps-V4.0.0-beta1)
+has only the steps part, without push.
 
 ## What it adds
 
