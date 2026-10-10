@@ -6,7 +6,7 @@ This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes 
 > Use it at your own risk.
 
 **Branch:** `GarminPush+Steps-V4.0.0-beta1` (AAPS `4.0.0-beta1` + the Garmin changes in one commit).
-**Watch face:** [aaps-garmin-demo-watchface](https://github.com/Pwb0186/aaps-garmin-demo-watchface),
+**Watch face:** [aaps-garmin-push-watchface](https://github.com/Pwb0186/aaps-garmin-push-watchface),
 a Connect IQ watch face that uses all of this.
 **Steps only:** branch
 [`GarminSteps-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminSteps-V4.0.0-beta1)
@@ -91,9 +91,9 @@ Wear OS, the loop, pumps and all other plugins are plain AAPS `4.0.0-beta1`.
 ## How to use it
 1. Build the APK from branch `GarminPush+Steps-V4.0.0-beta1` the same way as AAPS
    (see [Building the APK](https://wiki.aaps.app/en/latest/SettingUpAaps/BuildingAaps.html)).
-2. In AAPS, enable **Garmin** under Config Builder → Synchronization.
+2. In AAPS, enable **Garmin** under Configuration → Communication. Its settings are under Garmin → Settings.
 3. Install a watch face that uses V2 and/or sends steps, for example the
-   [demo watch face](https://github.com/Pwb0186/aaps-garmin-demo-watchface).
+   ["AAPS Push" watch face](https://github.com/Pwb0186/aaps-garmin-push-watchface).
    On the watch face, "Send steps to AAPS" must be on to send steps.
 
 ## Tested
