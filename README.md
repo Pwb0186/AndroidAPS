@@ -54,9 +54,9 @@ plain AAPS `4.0.0-beta1`.
 ## How to use it
 1. Build the APK from branch `GarminSteps-V4.0.0-beta1` the same way as AAPS
    (see [Building the APK](https://wiki.aaps.app/en/latest/SettingUpAaps/BuildingAaps.html)).
-2. In AAPS, enable **Garmin** under Config Builder → Synchronization.
+2. In AAPS, enable **Garmin** under Configuration → Communication. Its settings are under Garmin → Settings.
 3. Install a watch face that sends steps on `/get`, for example the
-   [demo watch face](https://github.com/Pwb0186/aaps-garmin-demo-watchface).
+   ["AAPS Push" watch face](https://github.com/Pwb0186/aaps-garmin-push-watchface).
    On the watch face, "Send steps to AAPS" must be on to send steps.
    With this branch the watch face gets its data on its own timer (no push).
 
