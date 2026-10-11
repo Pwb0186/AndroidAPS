@@ -310,7 +310,7 @@ class LoopHubTest : TestBase() {
         val samplingStart = Instant.ofEpochMilli(1_001_000)
         val samplingEnd = Instant.ofEpochMilli(1_101_000)
         val hr = HR(
-            timestamp = samplingStart.toEpochMilli(),
+            timestamp = samplingEnd.toEpochMilli(),
             duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
             dateCreated = clock.millis(),
             beatsPerMinute = 101.0,
@@ -381,7 +381,7 @@ class LoopHubTest : TestBase() {
         val samplingStart = Instant.ofEpochMilli(1_001_000)
         val samplingEnd = Instant.ofEpochMilli(1_101_000)
         val hr = HR(
-            timestamp = samplingStart.toEpochMilli(),
+            timestamp = samplingEnd.toEpochMilli(),
             duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
             dateCreated = clock.millis(),
             beatsPerMinute = 101.0,
