@@ -176,7 +176,7 @@ class LoopHubImpl(
         device: String?
     ) {
         val hr = HR(
-            timestamp = samplingStart.toEpochMilli(),
+            timestamp = samplingEnd.toEpochMilli(),
             duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
             dateCreated = clock.millis(),
             beatsPerMinute = avgHeartRate.toDouble(),
