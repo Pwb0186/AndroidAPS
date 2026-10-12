@@ -127,8 +127,12 @@ class GarminPlugin(
     private val garminAapsKey get() = preferences.get(GarminStringKey.RequestKey)
 
     private fun setupGarminMessenger() {
-        resetGarminMessenger()
-        createGarminMessenger()
+        val old: GarminMessenger?
+        synchronized(this) {
+            old = garminMessengerField
+            garminMessengerField = createGarminMessenger()
+        }
+        old?.dispose()
     }
 
     private fun createGarminMessenger(): GarminMessenger {
@@ -324,10 +328,7 @@ class GarminPlugin(
         return jo.toString()
     }
 
-    private fun getQueryParameter(uri: URI, name: String) = (uri.query ?: "")
-        .split("&")
-        .map { kv -> kv.split("=") }
-        .firstOrNull { kv -> kv.size == 2 && kv[0] == name }?.get(1)
+    private fun getQueryParameter(uri: URI, name: String): String? = uri.queryParameter(name)
 
     private fun getQueryParameter(
         uri: URI,

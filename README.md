@@ -43,8 +43,13 @@ Limit: the watch sends steps about every 5 minutes, and the "Steps count" trigge
 looks at records from the last 5 minutes. When the watch fetches late, the trigger
 finds no record for a short time.
 
-### Small fix
+### Small fixes
 - `/get` without heart rate no longer logs "average heart rate 0 BPM 1970-01-01".
+- Heart rate is stored with the end of the measuring period as time, as AAPS expects.
+  Before, it was stored 5 minutes too early.
+- Query values are decoded once. Before, an AAPS key with `+` or `%` never matched.
+- With an AAPS key set, starting the plugin no longer leaves an extra connection to
+  Garmin Connect open.
 
 ## What is not changed
 Watch faces, data fields and `/sgv.json` clients work as before. A watch face that does
