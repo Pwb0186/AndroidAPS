@@ -28,6 +28,7 @@ import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.atMost
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoMoreInteractions
@@ -54,7 +55,7 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @BeforeEach
     fun setup() {
-        gp = GarminPlugin(aapsLogger, rh, preferences, context, loopHub, persistenceLayer, mock())
+        gp = GarminPlugin(aapsLogger, rh, preferences, mock(), context, loopHub, persistenceLayer, mock())
         gp.clock = clock
         whenever(loopHub.currentProfileName).thenReturn("Default")
         whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28890)
@@ -229,6 +230,24 @@ class GarminPluginTest : TestBaseWithProfile() {
             handler(mock<SocketAddress>(), uri, null)
         )
 
+    }
+
+    @Test
+    fun requestHandler_KeyWithPlus() {
+        // A "+" in the key reaches AAPS as %2B and must be decoded once. Decoding
+        // uri.query (already decoded) a second time turned it into a space (401).
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("a+b")
+        val uri = URI("http://foo?key=a%2Bb")
+        val handler = gp.requestHandler { "OK" }
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
+    }
+
+    @Test
+    fun requestHandler_KeyWithPercent() {
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("100%")
+        val uri = URI("http://foo?key=100%25")
+        val handler = gp.requestHandler { "OK" }
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
     }
 
     @Test
@@ -464,4 +483,10 @@ class GarminPluginTest : TestBaseWithProfile() {
         verify(loopHub, atLeastOnce()).glucoseUnit
     }
 
+    @Test
+    fun receiveHeartRate_NoHeartRateInRequest() {
+        // A /get without hr/hrStart/hrEnd (most of them) logs and stores nothing.
+        gp.receiveHeartRate(createUri(mapOf("trig" to "push")))
+        verify(loopHub, never()).storeHeartRate(any(), any(), any(), anyOrNull())
+    }
 }

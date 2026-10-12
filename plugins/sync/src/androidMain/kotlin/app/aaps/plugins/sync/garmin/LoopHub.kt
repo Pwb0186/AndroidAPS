@@ -2,6 +2,7 @@ package app.aaps.plugins.sync.garmin
 
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
+import app.aaps.core.data.model.TT
 import app.aaps.core.interfaces.profile.Profile
 import java.time.Instant
 
@@ -29,6 +30,11 @@ interface LoopHub {
     /** Returns true if the pump is connected. */
     val isConnected: Boolean
 
+    /** Returns true if the loop is enabled and actually running (i.e. closed or
+     *  open loop is active). False when the loop is disabled or suspended, which
+     *  the watch face shows as a warning icon. */
+    val isLoopEnabled: Boolean
+
     /** Returns true if the current profile is set of a limited amount of time. */
     val isTemporaryProfile: Boolean
 
@@ -40,6 +46,9 @@ interface LoopHub {
 
     /** Returns the upper bound of the target glucose range. */
     val highGlucoseMark: Double
+
+    /** Returns the currently active temporary target, if any. */
+    val temporaryTarget: TT?
 
     /** Tells the loop algorithm that the pump is physically connected. */
     fun connectPump()
@@ -58,6 +67,19 @@ interface LoopHub {
     fun storeHeartRate(
         samplingStart: Instant, samplingEnd: Instant,
         avgHeartRate: Int,
+        device: String?
+    )
+
+    /** Stores the steps of the last minutes at [timestamp], one record per window.
+     *
+     * @param stepsPerWindow steps by window length in minutes (5, 10, 15, 30, 60, 180).
+     *   Each window gets its own record with that length as duration and all given
+     *   counts, the way the Wear OS app stores steps. The Automation "Steps count"
+     *   trigger reads the record whose duration is the window it checks.
+     */
+    fun storeStepsCount(
+        timestamp: Instant,
+        stepsPerWindow: Map<Int, Int>,
         device: String?
     )
 }
