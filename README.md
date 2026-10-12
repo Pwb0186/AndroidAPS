@@ -8,9 +8,11 @@ This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes 
 **Branch:** `GarminPush+Steps-V4.0.0-beta1` (AAPS `4.0.0-beta1` + the Garmin changes in one commit).
 **Watch face:** [aaps-garmin-push-watchface](https://github.com/Pwb0186/aaps-garmin-push-watchface),
 a Connect IQ watch face that uses all of this.
-**Steps only:** branch
+**Other branches:**
 [`GarminSteps-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminSteps-V4.0.0-beta1)
-has only the steps part, without push.
+has only the steps part, without push,
+[`GarminPush-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush-V4.0.0-beta1)
+has only push, without steps.
 
 ## What it adds
 
@@ -82,6 +84,8 @@ value is missing, the trigger finds no record for a short time.
 - Query values are decoded once. Before, an AAPS key with `+` or `%` never matched.
 - The AAPS key is masked in the log (`key=***`).
 - `/get` without heart rate no longer logs "average heart rate 0 BPM 1970-01-01".
+- Heart rate is stored with the end of the measuring period as time, as AAPS expects.
+  Before, it was stored 5 minutes too early.
 
 ## What is not changed
 V1 watch faces, data fields and `/sgv.json` clients work as before. With no push watch
