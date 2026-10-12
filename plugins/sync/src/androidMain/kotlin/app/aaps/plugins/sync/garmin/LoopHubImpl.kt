@@ -88,6 +88,10 @@ class LoopHubImpl(
     /** Returns true if the pump is connected. */
     override val isConnected: Boolean get() = runBlocking { loop.runningMode() } != RM.Mode.DISCONNECTED_PUMP
 
+    /** Returns true if the loop is enabled and actually running. */
+    override val isLoopEnabled: Boolean
+        get() = loop.isEnabled() && runBlocking { loop.runningMode() }.isLoopRunning()
+
     /** Returns true if the current profile is set of a limited amount of time. */
     override val isTemporaryProfile: Boolean
         get() {
@@ -113,6 +117,9 @@ class LoopHubImpl(
         get() = profileUtil.convertToMgdl(
             preferences.get(UnitDoubleKey.OverviewHighMark), glucoseUnit
         )
+
+    override val temporaryTarget
+        get() = runBlocking { persistenceLayer.getTemporaryTargetActiveAt(clock.millis()) }
 
     /** Tells the loop algorithm that the pump is physically connected. */
     override fun connectPump() {
@@ -167,7 +174,7 @@ class LoopHubImpl(
         device: String?
     ) {
         val hr = HR(
-            timestamp = samplingStart.toEpochMilli(),
+            timestamp = samplingEnd.toEpochMilli(),
             duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
             dateCreated = clock.millis(),
             beatsPerMinute = avgHeartRate.toDouble(),

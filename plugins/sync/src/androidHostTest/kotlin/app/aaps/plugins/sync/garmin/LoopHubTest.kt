@@ -36,6 +36,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -301,7 +303,7 @@ class LoopHubTest : TestBase() {
         val samplingStart = Instant.ofEpochMilli(1_001_000)
         val samplingEnd = Instant.ofEpochMilli(1_101_000)
         val hr = HR(
-            timestamp = samplingStart.toEpochMilli(),
+            timestamp = samplingEnd.toEpochMilli(),
             duration = samplingEnd.toEpochMilli() - samplingStart.toEpochMilli(),
             dateCreated = clock.millis(),
             beatsPerMinute = 101.0,
@@ -315,5 +317,28 @@ class LoopHubTest : TestBase() {
         )
         kotlinx.coroutines.delay(100.milliseconds) // Give time for GlobalScope.launch to complete
         verify(persistenceLayer).insertOrUpdateHeartRates(listOf(hr))
+    }
+
+    @Test
+    fun testIsLoopEnabled() = runTest {
+        whenever(loop.isEnabled()).thenReturn(true)
+        whenever(loop.runningMode()).thenReturn(RM.Mode.CLOSED_LOOP)
+        assertEquals(true, loopHub.isLoopEnabled)
+        verify(loop).isEnabled()
+        verify(loop).runningMode()
+    }
+
+    @Test
+    fun testIsLoopEnabled_PluginDisabled() = runTest {
+        whenever(loop.isEnabled()).thenReturn(false)
+        assertFalse(loopHub.isLoopEnabled)
+        verify(loop).isEnabled()
+    }
+
+    @Test
+    fun testTemporaryTargetNone() = runTest {
+        whenever(persistenceLayer.getTemporaryTargetActiveAt(clock.millis())).thenReturn(null)
+        assertNull(loopHub.temporaryTarget)
+        verify(persistenceLayer).getTemporaryTargetActiveAt(clock.millis())
     }
 }

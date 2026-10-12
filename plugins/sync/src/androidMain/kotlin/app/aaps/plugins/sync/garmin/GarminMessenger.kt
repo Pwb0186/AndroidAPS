@@ -1,9 +1,13 @@
 package app.aaps.plugins.sync.garmin
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import io.reactivex.rxjava3.disposables.Disposable
+import io.reactivex.rxjava3.schedulers.Schedulers
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 
 class GarminMessenger(
     private val aapsLogger: AAPSLogger,
@@ -11,12 +15,20 @@ class GarminMessenger(
     applicationIdNames: Map<String, String>,
     private val messageCallback: (app: GarminApplication, msg: Any) -> Unit,
     enableConnectIq: Boolean,
-    enableSimulator: Boolean): Disposable, GarminReceiver {
+    enableSimulator: Boolean,
+    /** Called when the connection to Garmin Connect is (back) up. GarminPlugin uses it
+     *  to push fresh data at once. */
+    private val onConnected: () -> Unit = {}
+): Disposable, GarminReceiver {
 
-    private var disposed: Boolean = false
+    @Volatile private var disposed: Boolean = false
+    private var activeDeviceClient: GarminDeviceClient? = null
     /** All devices that where connected since this instance was created. */
     private val devices = mutableMapOf<Long, GarminDevice>()
-    private val clients = mutableListOf<GarminClient>()
+    // CopyOnWriteArrayList ensures thread safety: onConnect/onDisconnect write
+    // from the ConnectIQ callback thread while sendMessage() iterates from the
+    // RxJava IO thread. mutableListOf() was not safe for concurrent access.
+    private val clients = CopyOnWriteArrayList<GarminClient>()
     private val appIdNames = mutableMapOf<String, String>()
     init {
         aapsLogger.info(LTag.GARMIN, "init CIQ debug=$enableSimulator")
@@ -40,17 +52,45 @@ class GarminMessenger(
         return GarminApplication(getDevice(client, deviceId), appId, appIdNames[appId])
     }
 
+    /** The fixed (V1) app ids get the glucose message broadcast to all of them, also
+     *  when they are not running or not installed - Garmin Connect then often gives no
+     *  answer. Sending again would only double that traffic (and log a warning per app),
+     *  so only push targets (V2 app ids, not in [appIdNames]) are sent again. */
+    @VisibleForTesting
+    fun resendOnNoAnswer(appId: String) = appId !in appIdNames
+
     private fun startDeviceClient() {
-        GarminDeviceClient(aapsLogger, context, this)
+        synchronized(this) {
+            if (disposed) return
+            activeDeviceClient = GarminDeviceClient(
+                aapsLogger, context, this, resendOnNoAnswer = ::resendOnNoAnswer
+            )
+        }
     }
 
     override fun onConnect(client: GarminClient) {
         aapsLogger.info(LTag.GARMIN, "onConnect $client")
-        clients.add(client)
+        val first = synchronized(this) {
+            if (disposed) {
+                client.dispose()
+                if (client == activeDeviceClient) {
+                    activeDeviceClient = null
+                }
+                return
+            }
+            // Under the lock, so a dispose() at the same time cannot miss this client.
+            clients.add(client)
+            clients.size == 1
+        }
+        if (first) onConnected()
     }
 
     override fun onDisconnect(client: GarminClient) {
+        if (disposed) return
         aapsLogger.info(LTag.GARMIN, "onDisconnect ${client.name}")
+        synchronized(this) {
+            if (client == activeDeviceClient) activeDeviceClient = null
+        }
         clients.remove(client)
         synchronized (devices) {
             val deviceIds = devices.filter { (_, d) -> d.client == client }.map { (id, _) -> id }
@@ -58,8 +98,16 @@ class GarminMessenger(
         }
         client.dispose()
         when (client) {
-            is GarminDeviceClient -> startDeviceClient()
-            is GarminSimulatorClient -> GarminSimulatorClient(aapsLogger, this)
+            is GarminDeviceClient -> {
+                // Start a new client after 5 s. Covers Garmin Connect being force-stopped
+                // or its service restarting - it is back well within 5 s.
+                Schedulers.io().scheduleDirect({
+                    if (!disposed) startDeviceClient()
+                }, RESTART_DELAY_SEC, TimeUnit.SECONDS)
+            }
+            is GarminSimulatorClient -> {
+                if (!disposed) GarminSimulatorClient(aapsLogger, this)
+            }
             else -> aapsLogger.warn(LTag.GARMIN, "onDisconnect unknown client $client")
         }
     }
@@ -92,13 +140,34 @@ class GarminMessenger(
         clients.forEach { cl -> cl.connectedDevices.forEach { d -> sendMessage(d, msg) }}
     }
 
+    /** Sends a message to a specific set of target applications on all devices (V2 dynamic). */
+    fun sendMessage(msg: Any, targetAppIds: Collection<String>) {
+        val snapshot = targetAppIds.toSet()
+        if (snapshot.isEmpty()) return
+        var devices = 0
+        clients.forEach { cl ->
+            cl.connectedDevices.forEach { d ->
+                devices++
+                snapshot.forEach { appId -> sendMessage(getApplication(cl, d.id, appId), msg) }
+            }
+        }
+        // Without this a push to a watch that is out of range or has Bluetooth off
+        // would leave no trace in the log at all.
+        if (devices == 0) {
+            aapsLogger.info(LTag.GARMIN, "push skipped: no connected Garmin device (apps $snapshot)")
+        }
+    }
+
     private fun sendMessage(app: GarminApplication, msg: Any) {
-        // Convert msg to string for logging.
+        // Convert msg to string for logging, excluding encodedGlucose to save log volume
+        // and masking the AAPS key (logs get shared in bug reports).
         val s = when (msg) {
             is Map<*,*> ->
-                msg.entries.joinToString(", ", "(", ")") { (k, v) -> "$k=$v" }
+                msg.filterKeys { it != "encodedGlucose" }.entries.joinToString(", ", "(", ")") { (k, v) ->
+                    if (k == "key" && v?.toString().orEmpty().isNotEmpty()) "$k=***" else "$k=$v"
+                }
             is List<*> ->
-                msg.joinToString(", ", "(", ")")
+                "(List of ${msg.size} items)"
             else ->
                 msg.toString()
         }
@@ -112,12 +181,20 @@ class GarminMessenger(
     }
 
     override fun dispose() {
-        if (!disposed) {
-            clients.forEach { c -> c.dispose() }
-            disposed = true
+        synchronized(this) {
+            if (!disposed) {
+                disposed = true
+                activeDeviceClient?.dispose()
+                activeDeviceClient = null
+                clients.forEach { c -> c.dispose() }
+                clients.clear()
+            }
         }
-        clients.clear()
     }
 
     override fun isDisposed() = disposed
+
+    private companion object {
+        const val RESTART_DELAY_SEC = 5L
+    }
 }
