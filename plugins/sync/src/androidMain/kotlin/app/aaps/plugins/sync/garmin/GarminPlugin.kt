@@ -14,6 +14,7 @@ import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
 import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.collectResilient
+import app.aaps.core.interfaces.sharedPreferences.SP
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.compose.icons.IcPluginGarmin
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
@@ -52,7 +53,7 @@ import kotlin.math.roundToInt
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
- * carbs, heart rate and pump disconnect events from the device. It communicates
+ * carbs, heart rate, steps and pump disconnect events from the device. It communicates
  * via HTTP on localhost or Garmin's native CIQ library.
  */
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
@@ -63,6 +64,7 @@ class GarminPlugin(
     aapsLogger: AAPSLogger,
     resourceHelper: ResourceHelper,
     preferences: Preferences,
+    private val sp: SP,
     private val context: Context,
     private val loopHub: LoopHub,
     private val persistenceLayer: PersistenceLayer,
@@ -79,6 +81,10 @@ class GarminPlugin(
 
     /** HTTP Server for local HTTP server communication (device app requests values) .*/
     private var server: HttpServer? = null
+
+    /** Step counts from the watch (/get?steps=...). See GarminSteps.kt. */
+    @VisibleForTesting
+    val garminSteps = GarminSteps(aapsLogger, sp, loopHub, { clock })
 
     @VisibleForTesting
     var garminMessengerField: GarminMessenger? = null
@@ -121,8 +127,12 @@ class GarminPlugin(
     private val garminAapsKey get() = preferences.get(GarminStringKey.RequestKey)
 
     private fun setupGarminMessenger() {
-        resetGarminMessenger()
-        createGarminMessenger()
+        val old: GarminMessenger?
+        synchronized(this) {
+            old = garminMessengerField
+            garminMessengerField = createGarminMessenger()
+        }
+        old?.dispose()
     }
 
     private fun createGarminMessenger(): GarminMessenger {
@@ -295,6 +305,7 @@ class GarminPlugin(
     @VisibleForTesting
     fun onGetBloodGlucose(uri: URI): CharSequence {
         receiveHeartRate(uri)
+        garminSteps.receive(uri)
         val profileName = loopHub.currentProfileName
         val waitSec = getQueryParameter(uri, "wait", 0L)
         val glucoseValues = getGlucoseValues(Duration.ofSeconds(waitSec))
@@ -317,10 +328,7 @@ class GarminPlugin(
         return jo.toString()
     }
 
-    private fun getQueryParameter(uri: URI, name: String) = (uri.query ?: "")
-        .split("&")
-        .map { kv -> kv.split("=") }
-        .firstOrNull { kv -> kv.size == 2 && kv[0] == name }?.get(1)
+    private fun getQueryParameter(uri: URI, name: String): String? = uri.queryParameter(name)
 
     private fun getQueryParameter(
         uri: URI,
@@ -377,6 +385,9 @@ class GarminPlugin(
         samplingStart: Instant, samplingEnd: Instant,
         avg: Int, device: String?, test: Boolean
     ) {
+        // Most requests carry no heart rate at all (no hr/hrStart parameters) - nothing
+        // to log or store then.
+        if (avg <= 0 && samplingStart == Instant.ofEpochMilli(0L)) return
         aapsLogger.info(LTag.GARMIN, "average heart rate $avg BPM $samplingStart to $samplingEnd")
         if (test) return
         if (avg > 10 && samplingStart > Instant.ofEpochMilli(0L) && samplingEnd > samplingStart) {
