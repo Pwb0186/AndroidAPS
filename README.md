@@ -6,9 +6,11 @@ This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes 
 > Use it at your own risk.
 
 **Branch:** `GarminSteps-V4.0.0-beta1` (AAPS `4.0.0-beta1` + steps from a Garmin watch).
-**Also with push to the watch:** branch
+**Other branches:**
 [`GarminPush+Steps-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush+Steps-V4.0.0-beta1)
-has the same steps code plus push-to-pull (V2) for watch faces.
+has the same steps code plus push-to-pull (V2) for watch faces,
+[`GarminPush-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush-V4.0.0-beta1)
+has only push, without steps.
 
 ## What it adds
 
