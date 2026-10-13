@@ -67,10 +67,12 @@ the steps in that window. Rules for the total:
   steps were sent, or turn off "Send steps to AAPS" in the watch face settings.
 - A delta of 0 steps is stored too, so a rule like "fewer than 100 steps" works.
 - The steps of a reading are spread evenly over the time since the last reading.
-- A window is only stored when the history covers all of it. After a start, a long
-  gap or an AAPS restart, the 5 minute window comes after 5 minutes and the 180 minute
+- A window is only stored when the history covers all of it. After the first reading or a
+  long gap, the 5 minute window comes after 5 minutes and the 180 minute
   window after 3 hours. Until then the trigger finds no record for that window, never
   a count that is too low.
+- The history is saved, so after a short AAPS restart (less than 12 minutes since
+  the last reading) the windows go on.
 
 Limit: the watch sends steps about every 5 minutes, and the "Steps count" trigger only
 looks at records from the last 5 minutes. When the watch answers late or a glucose

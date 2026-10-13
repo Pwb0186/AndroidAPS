@@ -36,6 +36,9 @@ class GarminSteps(
         const val PREF_GARMIN_LAST_STEPS = "garmin_http_last_steps"
         @VisibleForTesting
         const val PREF_GARMIN_LAST_TS = "garmin_http_last_steps_ts"
+        /** The history of the windows as text, so a short AAPS restart keeps the windows. */
+        @VisibleForTesting
+        const val PREF_GARMIN_STEPS_HISTORY = "garmin_http_steps_history"
 
         // Longest gap between two step readings whose delta is still stored.
         // Over a longer gap (phone out of range, watch face not running, AAPS
@@ -54,13 +57,16 @@ class GarminSteps(
     /** Steps taken from [start] to [end] (epoch ms), from one delta of the total. */
     private class Interval(val start: Long, val end: Long, val steps: Int)
 
-    // Deltas of the last 180 minutes, oldest first. Only in memory: after an AAPS
-    // restart the windows start again, and a window is stored only once the history
-    // covers it (see [storeWindows]).
+    // Deltas of the last 180 minutes, oldest first. Also kept in the preferences
+    // (PREF_GARMIN_STEPS_HISTORY), so the windows survive a short AAPS restart. After a
+    // restart with a gap over MAX_STEPS_GAP_MS the long-gap rule starts them again.
     private val history = ArrayDeque<Interval>()
 
     // Start of the history without a gap. Null when there is no history.
     private var historyStart: Long? = null
+
+    // The saved history is read once, at the first reading after a start.
+    private var historyLoaded = false
 
     // The HttpServer serves requests on a thread pool - two /get at the same time
     // must not both compute a delta from the same last total.
@@ -80,6 +86,7 @@ class GarminSteps(
             val now = clock().millis()
             val lastTotal = sp.getInt(PREF_GARMIN_LAST_STEPS, -1)
             val lastTs = sp.getLong(PREF_GARMIN_LAST_TS, 0L)
+            loadHistory(lastTs)
 
             // First measurement ever → record baseline value only, no delta
             if (lastTotal < 0) {
@@ -156,6 +163,7 @@ class GarminSteps(
         sp.putLong(PREF_GARMIN_LAST_TS, now)
         history.clear()
         historyStart = null
+        saveHistory()
     }
 
     private fun addInterval(start: Long, end: Long, steps: Int, totalSteps: Int) {
@@ -165,7 +173,49 @@ class GarminSteps(
         if (historyStart == null) historyStart = start
         val oldest = end - WINDOWS_MIN.last() * 60_000L
         while (history.isNotEmpty() && history.first().end <= oldest) history.removeFirst()
+        saveHistory()
         storeWindows(end)
+    }
+
+    /** Saves the history as "historyStart|start:end:steps;start:end:steps;...". */
+    private fun saveHistory() {
+        val start = historyStart
+        val text =
+            if (start == null || history.isEmpty()) ""
+            else "$start|" + history.joinToString(";") { "${it.start}:${it.end}:${it.steps}" }
+        sp.putString(PREF_GARMIN_STEPS_HISTORY, text)
+    }
+
+    /** Reads the saved history once after a start. It is only used when it ends at the
+     *  last reading ([lastTs]); text that cannot be read gives an empty history. */
+    private fun loadHistory(lastTs: Long) {
+        if (historyLoaded) return
+        historyLoaded = true
+        if (history.isNotEmpty()) return
+        val (start, intervals) = parseHistory(sp.getString(PREF_GARMIN_STEPS_HISTORY, "")) ?: return
+        if (intervals.last().end != lastTs) return
+        historyStart = start
+        history.addAll(intervals)
+    }
+
+    private fun parseHistory(text: String): Pair<Long, List<Interval>>? {
+        val parts = text.split("|", limit = 2)
+        if (parts.size != 2) return null
+        return try {
+            val start = parts[0].toLong()
+            val intervals = parts[1].split(";").map { item ->
+                val v = item.split(":")
+                if (v.size != 3) return null
+                Interval(v[0].toLong(), v[1].toLong(), v[2].toInt())
+            }
+            // Every interval must follow the one before it, as addInterval makes them.
+            val valid = intervals.isNotEmpty() && start <= intervals.first().start &&
+                intervals.all { it.end > it.start && it.steps >= 0 } &&
+                intervals.zipWithNext().all { (a, b) -> b.start == a.end }
+            if (valid) start to intervals else null
+        } catch (_: NumberFormatException) {
+            null
+        }
     }
 
     /** Stores the steps of every window that the history fully covers. A window that
