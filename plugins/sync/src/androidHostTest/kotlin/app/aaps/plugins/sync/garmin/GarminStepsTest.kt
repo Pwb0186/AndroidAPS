@@ -41,6 +41,7 @@ class GarminStepsTest : TestBase() {
 
     private val lastTotal get() = store[GarminSteps.PREF_GARMIN_LAST_STEPS]
     private val lastTs get() = store[GarminSteps.PREF_GARMIN_LAST_TS]
+    private val savedHistory get() = store[GarminSteps.PREF_GARMIN_STEPS_HISTORY]
 
     /** Steps stored at [now], by window in minutes - exactly these windows. */
     private fun verifyStored(vararg windows: Pair<Int, Int>) {
@@ -59,6 +60,11 @@ class GarminStepsTest : TestBase() {
             .whenever(sp).putInt(any<String>(), any<Int>())
         doAnswer { i -> store[i.getArgument(0)] = i.getArgument<Long>(1); null }
             .whenever(sp).putLong(any<String>(), any<Long>())
+        whenever(sp.getString(any<String>(), any<String>())).thenAnswer { i ->
+            store[i.getArgument(0)] as? String ?: i.getArgument<String>(1)
+        }
+        doAnswer { i -> store[i.getArgument(0)] = i.getArgument<String>(1); null }
+            .whenever(sp).putString(any<String>(), any<String>())
     }
 
     @Test
@@ -205,9 +211,9 @@ class GarminStepsTest : TestBase() {
     }
 
     @Test
-    fun restart_WindowsStartAgain() {
-        // The history is only in memory: after an AAPS restart the windows start again
-        // from the last reading, which is kept in the preferences.
+    fun restart_HistoryKept() {
+        // The history is saved in the preferences: after a short AAPS restart (a new
+        // GarminSteps with the same preferences) the windows go on.
         val steps = newSteps()
         steps.receive(uri("steps=1000"))
         for (i in 1..3) {
@@ -216,7 +222,58 @@ class GarminStepsTest : TestBase() {
         }
         now = t0.plusSeconds(1200)
         newSteps().receive(uri("steps=1400"))
+        verifyStored(5 to 100, 10 to 200, 15 to 300)
+    }
+
+    @Test
+    fun restartAfterLongGap_BaselineOnly() {
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        for (i in 1..3) {
+            now = t0.plusSeconds(300L * i)
+            steps.receive(uri("steps=${1000 + 100 * i}"))
+        }
+        now = t0.plusSeconds(900).plusMillis(GarminSteps.MAX_STEPS_GAP_MS + 1)
+        val restarted = newSteps()
+        restarted.receive(uri("steps=2000"))
+        assertEquals("", savedHistory)
+        now = now.plusSeconds(300)
+        restarted.receive(uri("steps=2050"))
+        verifyStored(5 to 50)
+    }
+
+    @Test
+    fun brokenSavedHistory_Ignored() {
+        store[GarminSteps.PREF_GARMIN_LAST_STEPS] = 1000
+        store[GarminSteps.PREF_GARMIN_LAST_TS] = t0.toEpochMilli()
+        store[GarminSteps.PREF_GARMIN_STEPS_HISTORY] = "not|a:history"
+        now = t0.plusSeconds(300)
+        newSteps().receive(uri("steps=1100"))
         verifyStored(5 to 100)
+    }
+
+    @Test
+    fun savedHistoryFromOtherReading_Ignored() {
+        // A history that does not end at the last reading does not belong to it.
+        val other = t0.minusSeconds(600).toEpochMilli()
+        store[GarminSteps.PREF_GARMIN_LAST_STEPS] = 1000
+        store[GarminSteps.PREF_GARMIN_LAST_TS] = t0.toEpochMilli()
+        store[GarminSteps.PREF_GARMIN_STEPS_HISTORY] = "$other|$other:${other + 300_000}:500"
+        now = t0.plusSeconds(300)
+        newSteps().receive(uri("steps=1100"))
+        verifyStored(5 to 100)
+    }
+
+    @Test
+    fun counterDrop_ClearsSavedHistory() {
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=1100"))
+        assertTrue((savedHistory as String).isNotEmpty())
+        now = t0.plusSeconds(600)
+        steps.receive(uri("steps=50"))
+        assertEquals("", savedHistory)
     }
 
     @Test
