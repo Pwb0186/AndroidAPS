@@ -145,9 +145,12 @@ class GarminDeviceClient(
     override fun isDisposed() = state == State.DISPOSED
     override fun dispose() {
         // GarminMessenger can dispose the same client twice (once in onDisconnect and
-        // again in its own dispose). A second unregisterReceiver() would throw.
-        if (state == State.DISPOSED) return
-        state = State.DISPOSED
+        // again in its own dispose), also from two threads at once. A second
+        // unregisterReceiver() would throw, so only the first call goes on.
+        synchronized(bindLock) {
+            if (state == State.DISPOSED) return
+            state = State.DISPOSED
+        }
         executor.shutdown()
         broadcastReceiver.forEach { context.unregisterReceiver(it) }
         broadcastReceiver.clear()
