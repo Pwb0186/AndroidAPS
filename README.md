@@ -1,17 +1,17 @@
 # AAPS with Garmin push
 
 This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes to the
-**Garmin plugin** only. Everything else is AAPS `4.0.0-beta1`, unchanged.
+**Garmin plugin** only. Everything else is AAPS `4.0.0-rc1`, unchanged.
 
 > Use it at your own risk.
 
-**Branch:** `GarminPush-V4.0.0-beta1` (AAPS `4.0.0-beta1` + push-to-pull for watch faces, no steps).
+**Branch:** `GarminPush-V4.0.0-rc1` (AAPS `4.0.0-rc1` + push-to-pull for watch faces, no steps).
 **Watch face:** [aaps-garmin-push-watchface](https://github.com/Pwb0186/aaps-garmin-push-watchface),
 a Connect IQ watch face that uses all of this.
 **Other branches:**
-[`GarminPush+Steps-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush+Steps-V4.0.0-beta1)
+[`GarminPush+Steps-V4.0.0-rc1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush+Steps-V4.0.0-rc1)
 has push and steps from the watch,
-[`GarminSteps-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminSteps-V4.0.0-beta1)
+[`GarminSteps-V4.0.0-rc1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminSteps-V4.0.0-rc1)
 has only steps, without push.
 
 ## What it adds
@@ -59,10 +59,10 @@ the watch keeps its last value instead of showing 0), `temporaryTarget*`,
 ## What is not changed
 V1 watch faces, data fields and `/sgv.json` clients work as before. With no push watch
 face and no AAPS key, AAPS does not connect to Garmin Connect, as before.
-Wear OS, the loop, pumps and all other plugins are plain AAPS `4.0.0-beta1`.
+Wear OS, the loop, pumps and all other plugins are plain AAPS `4.0.0-rc1`.
 
 ## How to use it
-1. Build the APK from branch `GarminPush-V4.0.0-beta1` the same way as AAPS
+1. Build the APK from branch `GarminPush-V4.0.0-rc1` the same way as AAPS
    (see [Building the APK](https://wiki.aaps.app/en/latest/SettingUpAaps/BuildingAaps.html)).
 2. In AAPS, enable **Garmin** under Configuration → Communication. Its settings are under Garmin → Settings.
 3. Install a watch face that uses V2, for example the
@@ -71,7 +71,7 @@ Wear OS, the loop, pumps and all other plugins are plain AAPS `4.0.0-beta1`.
 
 ## Tested
 - Forerunner 955 with my own watch face.
-- The push code is the same as on `GarminPush+Steps-V4.0.0-beta1`, which runs daily.
+- The push code is the same as on `GarminPush+Steps-V4.0.0-rc1`, which runs daily.
 - Tested: 24 hours, switching between 6 watch faces, Bluetooth off, phone restart,
   Garmin Connect force stop, watch out of range (6 and 24 min), carbs entered,
   AAPS key set, plugin quickly off/on, midnight.
