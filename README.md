@@ -1,15 +1,15 @@
 # AAPS with Garmin steps
 
 This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes to the
-**Garmin plugin** only. Everything else is AAPS `4.0.0-beta1`, unchanged.
+**Garmin plugin** only. Everything else is AAPS `4.0.0-rc1`, unchanged.
 
 > Use it at your own risk.
 
-**Branch:** `GarminSteps-V4.0.0-beta1` (AAPS `4.0.0-beta1` + steps from a Garmin watch).
+**Branch:** `GarminSteps-V4.0.0-rc1` (AAPS `4.0.0-rc1` + steps from a Garmin watch).
 **Other branches:**
-[`GarminPush+Steps-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush+Steps-V4.0.0-beta1)
+[`GarminPush+Steps-V4.0.0-rc1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush+Steps-V4.0.0-rc1)
 has the same steps code plus push-to-pull (V2) for watch faces,
-[`GarminPush-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush-V4.0.0-beta1)
+[`GarminPush-V4.0.0-rc1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush-V4.0.0-rc1)
 has only push, without steps.
 
 ## What it adds
@@ -58,10 +58,10 @@ finds no record for a short time.
 ## What is not changed
 Watch faces, data fields and `/sgv.json` clients work as before. A watch face that does
 not send `steps=` is not affected. Wear OS, the loop, pumps and all other plugins are
-plain AAPS `4.0.0-beta1`.
+plain AAPS `4.0.0-rc1`.
 
 ## How to use it
-1. Build the APK from branch `GarminSteps-V4.0.0-beta1` the same way as AAPS
+1. Build the APK from branch `GarminSteps-V4.0.0-rc1` the same way as AAPS
    (see [Building the APK](https://wiki.aaps.app/en/latest/SettingUpAaps/BuildingAaps.html)).
 2. In AAPS, enable **Garmin** under Configuration → Communication. Its settings are under Garmin → Settings.
 3. Install a watch face that sends steps on `/get`, for example the
