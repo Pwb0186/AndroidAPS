@@ -1,17 +1,17 @@
 # AAPS with Garmin push and steps
 
 This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes to the
-**Garmin plugin** only. Everything else is AAPS `4.0.0-beta1`, unchanged.
+**Garmin plugin** only. Everything else is AAPS `4.0.0-rc1`, unchanged.
 
 > Use it at your own risk.
 
-**Branch:** `GarminPush+Steps-V4.0.0-beta1` (AAPS `4.0.0-beta1` + the Garmin changes in one commit).
+**Branch:** `GarminPush+Steps-V4.0.0-rc1` (AAPS `4.0.0-rc1` + the Garmin changes).
 **Watch face:** [aaps-garmin-push-watchface](https://github.com/Pwb0186/aaps-garmin-push-watchface),
 a Connect IQ watch face that uses all of this.
 **Other branches:**
-[`GarminSteps-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminSteps-V4.0.0-beta1)
+[`GarminSteps-V4.0.0-rc1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminSteps-V4.0.0-rc1)
 has only the steps part, without push,
-[`GarminPush-V4.0.0-beta1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush-V4.0.0-beta1)
+[`GarminPush-V4.0.0-rc1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush-V4.0.0-rc1)
 has only push, without steps.
 
 ## What it adds
@@ -92,10 +92,10 @@ value is missing, the trigger finds no record for a short time.
 ## What is not changed
 V1 watch faces, data fields and `/sgv.json` clients work as before. With no push watch
 face and no AAPS key, AAPS does not connect to Garmin Connect, as before.
-Wear OS, the loop, pumps and all other plugins are plain AAPS `4.0.0-beta1`.
+Wear OS, the loop, pumps and all other plugins are plain AAPS `4.0.0-rc1`.
 
 ## How to use it
-1. Build the APK from branch `GarminPush+Steps-V4.0.0-beta1` the same way as AAPS
+1. Build the APK from branch `GarminPush+Steps-V4.0.0-rc1` the same way as AAPS
    (see [Building the APK](https://wiki.aaps.app/en/latest/SettingUpAaps/BuildingAaps.html)).
 2. In AAPS, enable **Garmin** under Configuration → Communication. Its settings are under Garmin → Settings.
 3. Install a watch face that uses V2 and/or sends steps, for example the
