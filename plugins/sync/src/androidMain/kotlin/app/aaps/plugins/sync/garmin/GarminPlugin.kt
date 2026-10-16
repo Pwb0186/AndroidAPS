@@ -464,7 +464,8 @@ class GarminPlugin(
             jo.addProperty("temporaryTargetLow", it.lowTarget.roundToInt())
             jo.addProperty("temporaryTargetHigh", it.highTarget.roundToInt())
             jo.addProperty("temporaryTargetReason", it.reason.text)
-            jo.addProperty("temporaryTargetEndSec", it.end / 1000)
+            // A scene without a duration has no end (end is Long.MAX_VALUE), so the field is left out.
+            if (it.hasEnd) jo.addProperty("temporaryTargetEndSec", it.end / 1000)
             jo.addProperty("temporaryTargetDurationMin", it.duration / 60000)
         } ?: jo.addProperty("temporaryTargetActive", false)
         jo.addProperty("connected", loopHub.isConnected)
