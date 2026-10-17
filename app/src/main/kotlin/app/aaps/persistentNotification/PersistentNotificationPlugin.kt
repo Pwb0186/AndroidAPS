@@ -3,7 +3,14 @@ package app.aaps.persistentNotification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.widget.RemoteViews
+import androidx.core.graphics.drawable.IconCompat
 import android.graphics.drawable.Icon
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -241,6 +248,7 @@ class PersistentNotificationPlugin(
         var line2: String? = null
         var line3: String? = null
         var bgStatusChipText: String? = null
+        var trendArrowText: String? = null
         var bgMetric: Metric? = null
         var metricValue: Metric.MetricValue? = null
         var unreadConversationBuilder: NotificationCompat.CarExtender.UnreadConversation.Builder? = null
@@ -273,6 +281,7 @@ class PersistentNotificationPlugin(
                 val trendSymbol = trendCalculator.getTrendArrow(iobCobCalculator.ads)
                     ?.takeIf { it != TrendArrow.NONE && it != TrendArrow.TRIPLE_UP && it != TrendArrow.TRIPLE_DOWN }
                     ?.symbol
+                trendArrowText = trendSymbol
                 line1 = bgStatusChipText + (trendSymbol?.let { " $it" } ?: "")
                 line1WithDelta = bgStatusChipText + (trendSymbol?.let { " $it" } ?: "")
                 if (glucoseStatus != null) {
@@ -369,7 +378,9 @@ class PersistentNotificationPlugin(
         if (includeAuto) lastAutoNotificationContent = content
         val builder = NotificationCompat.Builder(context, notificationHolder.channelID)
         builder.setOngoing(true)
-        applyLiveUpdate(
+        // TEST: Live Update (chip + MetricStyle) replaced by an xDrip-like notification:
+        // BG drawn as the status bar icon, and an own layout with the arrow next to the big BG.
+        if (false) applyLiveUpdate(
             builder = builder,
             bgStatusChipText = bgStatusChipText,
             line1 = line1,
@@ -381,6 +392,21 @@ class PersistentNotificationPlugin(
         builder.setOnlyAlertOnce(true)
         builder.setCategory(NotificationCompat.CATEGORY_STATUS)
         builder.setSmallIcon(iconsProvider.getNotificationIcon())
+        if (!bgStatusChipText.isNullOrBlank()) {
+            builder.setSmallIcon(IconCompat.createWithBitmap(bgStatusBarIcon(bgStatusChipText)))
+            val small = RemoteViews(context.packageName, app.aaps.R.layout.notification_bg_small)
+            val big = RemoteViews(context.packageName, app.aaps.R.layout.notification_bg_big)
+            for (v in listOf(small, big)) {
+                v.setTextViewText(app.aaps.R.id.notif_line1, line1)
+                v.setTextViewText(app.aaps.R.id.notif_line2, line2 ?: "")
+                v.setTextViewText(app.aaps.R.id.notif_bg, bgStatusChipText)
+                v.setTextViewText(app.aaps.R.id.notif_arrow, trendArrowText ?: "")
+            }
+            big.setTextViewText(app.aaps.R.id.notif_line3, line3 ?: "")
+            builder.setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            builder.setCustomContentView(small)
+            builder.setCustomBigContentView(big)
+        }
         builder.setContentTitle(line1)
         if (line2 != null) builder.setContentText(line2)
         if (line3 != null) builder.setSubText(line3)
@@ -455,6 +481,23 @@ class PersistentNotificationPlugin(
         texts.secondary?.let { extras.putString(SAMSUNG_EXTRA_SECONDARY_INFO, it) }
         texts.nowBarSecondary?.let { extras.putString(SAMSUNG_EXTRA_NOWBAR_SECONDARY_INFO, it) }
         builder.addExtras(extras)
+    }
+
+    /** BG as a bitmap for the status bar icon, like xDrip. Android only uses the alpha channel. */
+    private fun bgStatusBarIcon(text: String): Bitmap {
+        val size = 96
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            typeface = Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.CENTER
+            textSize = size * 0.75f
+        }
+        // Shrink the text until it fits the width ("12,3" is wider than "5,2")
+        while (paint.measureText(text) > size && paint.textSize > 10f) paint.textSize -= 2f
+        val y = size / 2f - (paint.descent() + paint.ascent()) / 2f
+        Canvas(bitmap).drawText(text, size / 2f, y, paint)
+        return bitmap
     }
 
     private fun Double.round(decimals: Int): Double {
