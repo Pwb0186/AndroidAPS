@@ -165,7 +165,9 @@ class GarminStepsTest : TestBase() {
     }
 
     @Test
-    fun longGap_BaselineMovedWithoutSpike() {
+    fun longGapWithoutHistory_NothingStored() {
+        // The gap is kept, but no window holds it whole and starts after the first
+        // reading, so no count is stored - and the 3000 steps are no spike.
         val steps = newSteps()
         steps.receive(uri("steps=1000"))
         now = t0.plusMillis(GarminSteps.MAX_STEPS_GAP_MS + 1)
@@ -226,7 +228,10 @@ class GarminStepsTest : TestBase() {
     }
 
     @Test
-    fun restartAfterLongGap_BaselineOnly() {
+    fun restartAfterLongGap_GapKept() {
+        // 15 minutes of history, then AAPS is away for just over 12 minutes. The 700 steps
+        // of the gap are in the 15-minute window, which holds the whole gap. 5 and 10
+        // minutes start inside the gap and are left out.
         val steps = newSteps()
         steps.receive(uri("steps=1000"))
         for (i in 1..3) {
@@ -236,10 +241,77 @@ class GarminStepsTest : TestBase() {
         now = t0.plusSeconds(900).plusMillis(GarminSteps.MAX_STEPS_GAP_MS + 1)
         val restarted = newSteps()
         restarted.receive(uri("steps=2000"))
-        assertEquals("", savedHistory)
+        verifyStored(15 to 760)
+        assertTrue((savedHistory as String).endsWith(":g"))
+        // 5 minutes later: 5 minutes starts at the end of the gap, 30 minutes before it.
         now = now.plusSeconds(300)
         restarted.receive(uri("steps=2050"))
-        verifyStored(5 to 50)
+        verifyStored(5 to 50, 30 to 1010)
+    }
+
+    /** 100 steps every 5 minutes for an hour, then no reading for 40 minutes, in which
+     *  the total grows by 2000. */
+    private fun hourThenGap(steps: GarminSteps) {
+        steps.receive(uri("steps=1000"))
+        for (i in 1..12) {
+            now = t0.plusSeconds(300L * i)
+            steps.receive(uri("steps=${1000 + 100 * i}"))
+        }
+        now = t0.plusSeconds(3600 + 2400)
+        steps.receive(uri("steps=4200"))
+    }
+
+    @Test
+    fun longGap_OnlyWindowsHoldingTheWholeGap() {
+        // 5 to 30 minutes start inside the gap: the 2000 steps cannot be split, so they
+        // are left out instead of stored as an average. 60 minutes holds the whole gap
+        // and is exact: 2000 + the last 20 minutes before it.
+        val steps = newSteps()
+        hourThenGap(steps)
+        verifyStored(60 to 2400)
+        // Next reading: 5 minutes is after the gap again; 10 to 30 still start inside it.
+        now = now.plusSeconds(300)
+        steps.receive(uri("steps=4300"))
+        verifyStored(5 to 100, 60 to 2400)
+    }
+
+    @Test
+    fun longGap_KeptOverRestart() {
+        // The gap interval is saved with its mark, so after a restart the windows that
+        // start inside it are still left out.
+        hourThenGap(newSteps())
+        now = now.plusSeconds(300)
+        newSteps().receive(uri("steps=4300"))
+        verifyStored(5 to 100, 60 to 2400)
+    }
+
+    @Test
+    fun gapOverMaxKept_BaselineOnly() {
+        // No window is longer than 180 minutes, so a longer gap could be in none of them.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=1100"))
+        verifyStored(5 to 100)
+        now = now.plusMillis(GarminSteps.MAX_KEPT_GAP_MS + 1)
+        steps.receive(uri("steps=5000"))
+        verifyNoMoreInteractions(loopHub)
+        assertEquals("", savedHistory)
+        assertEquals(5000, lastTotal)
+    }
+
+    @Test
+    fun longGapOverMidnight_BaselineOnly() {
+        // The counter is reset at midnight: a higher total after a gap over midnight may
+        // still be today's steps only, so the gap is not kept.
+        now = Instant.parse("2026-10-01T23:30:00Z")
+        val steps = newSteps()
+        steps.receive(uri("steps=9000"))
+        now = now.plusSeconds(2400)  // 00:10 next day
+        steps.receive(uri("steps=9100"))
+        verifyNoInteractions(loopHub)
+        assertEquals("", savedHistory)
+        assertEquals(9100, lastTotal)
     }
 
     @Test
