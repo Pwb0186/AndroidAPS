@@ -27,22 +27,26 @@ For each reading AAPS stores one record per window (5, 10, 15, 30, 60, 180 min) 
 the steps in that window. Rules for the total:
 
 - The first value is only a starting point. Nothing is stored.
-- More than 12 minutes since the last value: only the starting point moves (we do not
-  know when those steps were taken).
+- 12 minutes to 3 hours since the last value, on the same day (watch out of range,
+  AAPS stopped): the steps of the gap are known, but not when in the gap they were
+  taken. A window that holds the whole gap is stored with the right count. A window
+  that starts inside the gap is left out until it no longer does.
+- More than 3 hours since the last value, or a gap over midnight: only the starting
+  point moves.
 - At local midnight the watch resets its counter. This is handled.
 - A lower value on the same day (for example a new watch, or a second watch sending
   to the same AAPS): only the starting point moves.
 - Only one watch should send steps to an AAPS. A second watch with a higher total is
-  counted as steps. When you switch watch, wait at least 12 minutes after the last
+  counted as steps. When you switch watch, wait at least 3 hours after the last
   steps were sent, or turn off "Send steps to AAPS" in the watch face settings.
 - A delta of 0 steps is stored too, so a rule like "fewer than 100 steps" works.
 - The steps of a reading are spread evenly over the time since the last reading.
-- A window is only stored when the history covers all of it. After the first reading or a
-  long gap, the 5 minute window comes after 5 minutes and the 180 minute
-  window after 3 hours. Until then the trigger finds no record for that window, never
-  a count that is too low.
-- The history is saved, so after a short AAPS restart (less than 12 minutes since
-  the last reading) the windows go on.
+- A window is only stored when the history covers all of it. After the first reading,
+  a gap of more than 3 hours or a counter drop, the 5 minute window comes after
+  5 minutes and the 180 minute window after 3 hours. Until then the trigger finds no
+  record for that window, never a count that is too low or an average.
+- The history is saved, so after an AAPS restart the windows go on (with the gap rule
+  above when it took more than 12 minutes).
 
 Limit: the watch sends steps about every 5 minutes, and the "Steps count" trigger only
 looks at records from the last 5 minutes. When the watch fetches late, the trigger
