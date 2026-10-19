@@ -14,7 +14,11 @@ import kotlin.math.roundToInt
  *
  * AAPS keeps the last total and turns the difference into the steps of the last
  * 5, 10, 15, 30, 60 and 180 minutes (see [ingestTotalSteps] and [storeWindows]).
- * Only exact counts are stored: a window the history does not cover is left out.
+ *
+ * While AAPS cannot be reached (phone out of range, AAPS stopped) the watch face keeps
+ * its totals and sends them with the next `/get` as
+ * `stepsPrev=<epoch sec>:<total>,<epoch sec>:<total>,...` (oldest first). They are read
+ * before `steps=`, each at its own time, so there is no gap in the history.
  *
  * Kept out of GarminPlugin so the plugin stays about glucose and push, and so the step
  * logic can be tested on its own (GarminStepsTest).
@@ -41,18 +45,16 @@ class GarminSteps(
         @VisibleForTesting
         const val PREF_GARMIN_STEPS_HISTORY = "garmin_http_steps_history"
 
-        // Longest gap between two step readings that is an ordinary interval: its steps
-        // are spread over its time. Over a longer gap (phone out of range, watch face not
-        // running, AAPS stopped) we do not know when in the gap the steps were taken.
+        // Longest gap between two step readings whose delta is still stored.
+        // Over a longer gap (phone out of range, watch face not running, AAPS
+        // stopped) we do not know when the steps were taken, so only the baseline
+        // is moved and the windows start again.
         @VisibleForTesting
         const val MAX_STEPS_GAP_MS = 12 * 60 * 1000L
 
-        // A longer gap on the same day is kept as one gap interval: its total is known, so
-        // a window that holds the whole gap is still exact. A window that starts inside it
-        // is left out. A gap longer than the longest window would be in no window, so it
-        // only moves the baseline.
-        @VisibleForTesting
-        const val MAX_KEPT_GAP_MS = 180 * 60 * 1000L
+        // Most totals read from one stepsPrev. The watch face sends at most 36 (3 hours of
+        // 5-minute readings); this only guards against a broken or hostile request.
+        private const val MAX_PREV_TOTALS = 60
 
         /** The windows the Automation "Steps count" trigger and the Wear OS app use. */
         private val WINDOWS_MIN = listOf(5, 10, 15, 30, 60, 180)
@@ -61,13 +63,12 @@ class GarminSteps(
         private const val CANONICAL_DEVICE = "Garmin"
     }
 
-    /** Steps taken from [start] to [end] (epoch ms), from one delta of the total.
-     *  [gap]: longer than MAX_STEPS_GAP_MS, so the steps cannot be spread over its time. */
-    private class Interval(val start: Long, val end: Long, val steps: Int, val gap: Boolean = false)
+    /** Steps taken from [start] to [end] (epoch ms), from one delta of the total. */
+    private class Interval(val start: Long, val end: Long, val steps: Int)
 
     // Deltas of the last 180 minutes, oldest first. Also kept in the preferences
-    // (PREF_GARMIN_STEPS_HISTORY), so the windows survive an AAPS restart. A restart
-    // gives a gap like any other: kept as a gap interval up to MAX_KEPT_GAP_MS.
+    // (PREF_GARMIN_STEPS_HISTORY), so the windows survive a short AAPS restart. After a
+    // restart with a gap over MAX_STEPS_GAP_MS the long-gap rule starts them again.
     private val history = ArrayDeque<Interval>()
 
     // Start of the history without a gap. Null when there is no history.
@@ -80,18 +81,44 @@ class GarminSteps(
     // must not both compute a delta from the same last total.
     private val ingestLock = Any()
 
-    /** Reads `steps=<today's total>` from a `/get` request, if it has one. */
+    /** Reads `steps=<today's total>` from a `/get` request, if it has one, and the
+     *  totals in `stepsPrev` that the watch face kept while AAPS could not be reached. */
     fun receive(uri: URI) {
         val totalSteps = uri.queryParameter("steps")?.toIntOrNull() ?: return
         aapsLogger.debug(LTag.GARMIN, "Garmin sent steps: $totalSteps")
-        if (totalSteps >= 0) ingestTotalSteps(totalSteps)
+        if (totalSteps < 0) return
+        synchronized(ingestLock) {
+            val now = clock().millis()
+            val prev = prevTotals(uri.queryParameter("stepsPrev"), now)
+            if (prev.isNotEmpty()) aapsLogger.info(LTag.GARMIN, "[GarminHTTP] ${prev.size} kept totals from the watch")
+            for ((ts, total) in prev) ingestTotalSteps(total, ts)
+            ingestTotalSteps(totalSteps, now)
+        }
     }
 
-    private fun ingestTotalSteps(totalSteps: Int) {
+    /** The totals of `stepsPrev` that are newer than the last reading and older than
+     *  [now], oldest first. Totals AAPS already has (the watch sends the list again when
+     *  an answer got lost) are left out, so they are not counted twice. */
+    private fun prevTotals(text: String?, now: Long): List<Pair<Long, Int>> {
+        if (text.isNullOrEmpty()) return emptyList()
+        val lastTs = sp.getLong(PREF_GARMIN_LAST_TS, 0L)
+        return text.split(",")
+            .take(MAX_PREV_TOTALS)
+            .mapNotNull { item ->
+                val v = item.split(":")
+                val ts = v.getOrNull(0)?.toLongOrNull()?.times(1000L)
+                val total = v.getOrNull(1)?.toIntOrNull()
+                if (v.size == 2 && ts != null && total != null && total >= 0) ts to total else null
+            }
+            .filter { (ts, _) -> ts > lastTs && ts < now }
+            .sortedBy { it.first }
+            .distinctBy { it.first }
+    }
+
+    private fun ingestTotalSteps(totalSteps: Int, now: Long) {
         synchronized(ingestLock) {
             // Note: AAPS treats all Garmin step inputs as a single unified stream ("Garmin").
             // Per-device tracking is not supported, matching the global PREF_GARMIN_LAST_STEPS.
-            val now = clock().millis()
             val lastTotal = sp.getInt(PREF_GARMIN_LAST_STEPS, -1)
             val lastTs = sp.getLong(PREF_GARMIN_LAST_TS, 0L)
             loadHistory(lastTs)
@@ -145,19 +172,9 @@ class GarminSteps(
                 return
             }
 
-            // Long gap on the same day: the total of the gap is right, only not when in the
-            // gap the steps were taken. Kept as one gap interval (see MAX_KEPT_GAP_MS).
-            if (!isNewDay && gapMs > MAX_STEPS_GAP_MS && gapMs <= MAX_KEPT_GAP_MS) {
-                aapsLogger.info(
-                    LTag.GARMIN,
-                    "[GarminHTTP] long gap ($gapMs ms, delta=$delta, Total: $totalSteps) kept as one interval"
-                )
-                addInterval(lastTs, now, delta, totalSteps, gap = true)
-                return
-            }
-
-            // Longer gap, or a gap over midnight (the counter may have been reset in it):
-            // move the baseline only, the same way the midnight-rollover branch above does.
+            // Long gap (watch face not running, or one that does not send stepsPrev): the
+            // steps are from somewhere in the whole gap. Move the baseline only, the
+            // same way the midnight-rollover branch above does.
             if (gapMs !in 1..MAX_STEPS_GAP_MS) {
                 aapsLogger.info(
                     LTag.GARMIN,
@@ -184,10 +201,10 @@ class GarminSteps(
         saveHistory()
     }
 
-    private fun addInterval(start: Long, end: Long, steps: Int, totalSteps: Int, gap: Boolean = false) {
+    private fun addInterval(start: Long, end: Long, steps: Int, totalSteps: Int) {
         sp.putInt(PREF_GARMIN_LAST_STEPS, totalSteps)
         sp.putLong(PREF_GARMIN_LAST_TS, end)
-        history.addLast(Interval(start, end, steps, gap))
+        history.addLast(Interval(start, end, steps))
         if (historyStart == null) historyStart = start
         val oldest = end - WINDOWS_MIN.last() * 60_000L
         while (history.isNotEmpty() && history.first().end <= oldest) history.removeFirst()
@@ -195,15 +212,12 @@ class GarminSteps(
         storeWindows(end)
     }
 
-    /** Saves the history as "historyStart|start:end:steps;start:end:steps;...".
-     *  A gap interval has ":g" at the end. */
+    /** Saves the history as "historyStart|start:end:steps;start:end:steps;...". */
     private fun saveHistory() {
         val start = historyStart
         val text =
             if (start == null || history.isEmpty()) ""
-            else "$start|" + history.joinToString(";") {
-                "${it.start}:${it.end}:${it.steps}" + if (it.gap) ":g" else ""
-            }
+            else "$start|" + history.joinToString(";") { "${it.start}:${it.end}:${it.steps}" }
         sp.putString(PREF_GARMIN_STEPS_HISTORY, text)
     }
 
@@ -226,9 +240,8 @@ class GarminSteps(
             val start = parts[0].toLong()
             val intervals = parts[1].split(";").map { item ->
                 val v = item.split(":")
-                val gap = v.size == 4 && v[3] == "g"
-                if (v.size != 3 && !gap) return null
-                Interval(v[0].toLong(), v[1].toLong(), v[2].toInt(), gap)
+                if (v.size != 3) return null
+                Interval(v[0].toLong(), v[1].toLong(), v[2].toInt())
             }
             // Every interval must follow the one before it, as addInterval makes them.
             val valid = intervals.isNotEmpty() && start <= intervals.first().start &&
@@ -241,17 +254,14 @@ class GarminSteps(
     }
 
     /** Stores the steps of every window that the history fully covers. A window that
-     *  is not covered yet (just after a start, a very long gap or a counter drop) is left
+     *  is not covered yet (just after a start, a long gap or a counter drop) is left
      *  out, so the Automation trigger finds no record for it instead of a count that
-     *  is too low. A window that starts inside a gap interval is left out too: the
-     *  steps cannot be split there. Steps of an ordinary interval are spread evenly
-     *  over its time. */
+     *  is too low. Steps of an interval are spread evenly over its time. */
     private fun storeWindows(now: Long) {
         val start = historyStart ?: return
         val steps = WINDOWS_MIN
-            .associateWith { window -> now - window * 60_000L }
-            .filterValues { from -> from >= start && history.none { it.gap && from > it.start && from < it.end } }
-            .mapValues { (_, from) -> stepsSince(from) }
+            .filter { now - it * 60_000L >= start }
+            .associateWith { window -> stepsSince(now - window * 60_000L) }
         if (steps.isNotEmpty()) loopHub.storeStepsCount(Instant.ofEpochMilli(now), steps, CANONICAL_DEVICE)
     }
 
