@@ -44,6 +44,9 @@ class GarminSteps(
         /** The history of the windows as text, so a short AAPS restart keeps the windows. */
         @VisibleForTesting
         const val PREF_GARMIN_STEPS_HISTORY = "garmin_http_steps_history"
+        /** The watch model (part number from `device=`) of the last total; see [watchModel]. */
+        @VisibleForTesting
+        const val PREF_GARMIN_LAST_DEVICE = "garmin_http_last_steps_device"
 
         // Longest gap between two step readings whose delta is still stored.
         // Over a longer gap (phone out of range, watch face not running, AAPS
@@ -87,14 +90,20 @@ class GarminSteps(
         val totalSteps = uri.queryParameter("steps")?.toIntOrNull() ?: return
         aapsLogger.debug(LTag.GARMIN, "Garmin sent steps: $totalSteps")
         if (totalSteps < 0) return
+        val model = watchModel(uri.queryParameter("device"))
         synchronized(ingestLock) {
             val now = clock().millis()
             val prev = prevTotals(uri.queryParameter("stepsPrev"), now)
             if (prev.isNotEmpty()) aapsLogger.info(LTag.GARMIN, "[GarminHTTP] ${prev.size} kept totals from the watch")
-            for ((ts, total) in prev) ingestTotalSteps(total, ts)
-            ingestTotalSteps(totalSteps, now)
+            for ((ts, total) in prev) ingestTotalSteps(total, ts, model)
+            ingestTotalSteps(totalSteps, now, model)
         }
     }
+
+    /** The watch model from `device=<part number>_<watch face>` (e.g. "006-B4024-00_WF"), or null
+     *  when the request has none. Another watch face on the same watch has the same model. */
+    private fun watchModel(device: String?): String? =
+        device?.substringBefore("_")?.takeIf { it.isNotEmpty() }
 
     /** The totals of `stepsPrev` that are newer than the last reading and older than
      *  [now], oldest first. Totals AAPS already has (the watch sends the list again when
@@ -115,18 +124,30 @@ class GarminSteps(
             .distinctBy { it.first }
     }
 
-    private fun ingestTotalSteps(totalSteps: Int, now: Long) {
+    private fun ingestTotalSteps(totalSteps: Int, now: Long, model: String?) {
         synchronized(ingestLock) {
             // Note: AAPS treats all Garmin step inputs as a single unified stream ("Garmin").
             // Per-device tracking is not supported, matching the global PREF_GARMIN_LAST_STEPS.
             val lastTotal = sp.getInt(PREF_GARMIN_LAST_STEPS, -1)
             val lastTs = sp.getLong(PREF_GARMIN_LAST_TS, 0L)
+            val lastModel = sp.getString(PREF_GARMIN_LAST_DEVICE, "")
+            if (model != null && model != lastModel) sp.putString(PREF_GARMIN_LAST_DEVICE, model)
             loadHistory(lastTs)
 
             // First measurement ever → record baseline value only, no delta
             if (lastTotal < 0) {
                 moveBaseline(totalSteps, now)
                 aapsLogger.info(LTag.GARMIN, "[GarminHTTP] baseline steps=$totalSteps")
+                return
+            }
+
+            // Another watch model (a second watch, or the Connect IQ simulator): its total cannot
+            // be compared with the last one, so a higher total would be stored as steps. Start
+            // again from its total. Two watches that send at the same time therefore store no
+            // steps at all, never wrong ones. A request without device= is not checked.
+            if (model != null && lastModel.isNotEmpty() && model != lastModel) {
+                aapsLogger.info(LTag.GARMIN, "[GarminHTTP] steps from another watch ($lastModel → $model); baseline steps=$totalSteps")
+                moveBaseline(totalSteps, now)
                 return
             }
 
