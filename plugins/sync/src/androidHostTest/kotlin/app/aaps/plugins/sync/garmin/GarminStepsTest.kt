@@ -477,6 +477,57 @@ class GarminStepsTest : TestBase() {
     }
 
     @Test
+    fun otherWatchModel_NewBaselineWithoutSpike() {
+        // As in a log 17/10: the Connect IQ simulator (another model) sent steps=0 between two
+        // readings of the watch. Without the model check the watch's next total (8578) was
+        // stored as steps.
+        val steps = newSteps()
+        steps.receive(uri("steps=8578&device=006-B4024-00_WF"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=0&device=006-B4603-00_WFA"))
+        now = t0.plusSeconds(360)
+        steps.receive(uri("steps=8578&device=006-B4024-00_WF"))
+        verifyNoInteractions(loopHub)
+        now = t0.plusSeconds(660)
+        steps.receive(uri("steps=8678&device=006-B4024-00_WF"))
+        verifyStored(5 to 100)
+        assertEquals("006-B4024-00", store[GarminSteps.PREF_GARMIN_LAST_DEVICE])
+    }
+
+    @Test
+    fun otherWatchFaceSameWatch_NoNewBaseline() {
+        // device= ends with the watch face (_WF, _WF3 ...): another watch face on the same
+        // watch is the same model and goes on counting.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000&device=006-B4024-00_WF"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=1100&device=006-B4024-00_WF3"))
+        verifyStored(5 to 100)
+    }
+
+    @Test
+    fun withoutDevice_NotChecked() {
+        // A watch face that does not send device= is not checked, as before.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000&device=006-B4024-00_WF"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=1100"))
+        verifyStored(5 to 100)
+        assertEquals("006-B4024-00", store[GarminSteps.PREF_GARMIN_LAST_DEVICE])
+    }
+
+    @Test
+    fun otherWatchModel_KeptTotalsStartFromItsOldest() {
+        // The other watch's kept totals: the oldest is the new baseline, the rest count.
+        val steps = newSteps()
+        steps.receive(uri("steps=9000&device=006-B4024-00_WF"))
+        now = t0.plusSeconds(900)
+        val kept = prev(t0.plusSeconds(300) to 500, t0.plusSeconds(600) to 600)
+        steps.receive(uri("steps=700&stepsPrev=$kept&device=006-B4315-00_WF"))
+        verifyStored(5 to 100, 10 to 200)
+    }
+
+    @Test
     fun noStepsParameter_Ignored() {
         newSteps().receive(uri("appId=CBE3D42A21C748B4A1FDF2511322F0B6&hr=60&trig=push"))
         verifyNoInteractions(loopHub)
