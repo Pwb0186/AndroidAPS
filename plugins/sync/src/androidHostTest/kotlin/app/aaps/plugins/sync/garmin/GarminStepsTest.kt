@@ -165,9 +165,7 @@ class GarminStepsTest : TestBase() {
     }
 
     @Test
-    fun longGapWithoutHistory_NothingStored() {
-        // The gap is kept, but no window holds it whole and starts after the first
-        // reading, so no count is stored - and the 3000 steps are no spike.
+    fun longGap_BaselineMovedWithoutSpike() {
         val steps = newSteps()
         steps.receive(uri("steps=1000"))
         now = t0.plusMillis(GarminSteps.MAX_STEPS_GAP_MS + 1)
@@ -228,10 +226,7 @@ class GarminStepsTest : TestBase() {
     }
 
     @Test
-    fun restartAfterLongGap_GapKept() {
-        // 15 minutes of history, then AAPS is away for just over 12 minutes. The 700 steps
-        // of the gap are in the 15-minute window, which holds the whole gap. 5 and 10
-        // minutes start inside the gap and are left out.
+    fun restartAfterLongGap_BaselineOnly() {
         val steps = newSteps()
         steps.receive(uri("steps=1000"))
         for (i in 1..3) {
@@ -241,77 +236,10 @@ class GarminStepsTest : TestBase() {
         now = t0.plusSeconds(900).plusMillis(GarminSteps.MAX_STEPS_GAP_MS + 1)
         val restarted = newSteps()
         restarted.receive(uri("steps=2000"))
-        verifyStored(15 to 760)
-        assertTrue((savedHistory as String).endsWith(":g"))
-        // 5 minutes later: 5 minutes starts at the end of the gap, 30 minutes before it.
+        assertEquals("", savedHistory)
         now = now.plusSeconds(300)
         restarted.receive(uri("steps=2050"))
-        verifyStored(5 to 50, 30 to 1010)
-    }
-
-    /** 100 steps every 5 minutes for an hour, then no reading for 40 minutes, in which
-     *  the total grows by 2000. */
-    private fun hourThenGap(steps: GarminSteps) {
-        steps.receive(uri("steps=1000"))
-        for (i in 1..12) {
-            now = t0.plusSeconds(300L * i)
-            steps.receive(uri("steps=${1000 + 100 * i}"))
-        }
-        now = t0.plusSeconds(3600 + 2400)
-        steps.receive(uri("steps=4200"))
-    }
-
-    @Test
-    fun longGap_OnlyWindowsHoldingTheWholeGap() {
-        // 5 to 30 minutes start inside the gap: the 2000 steps cannot be split, so they
-        // are left out instead of stored as an average. 60 minutes holds the whole gap
-        // and is exact: 2000 + the last 20 minutes before it.
-        val steps = newSteps()
-        hourThenGap(steps)
-        verifyStored(60 to 2400)
-        // Next reading: 5 minutes is after the gap again; 10 to 30 still start inside it.
-        now = now.plusSeconds(300)
-        steps.receive(uri("steps=4300"))
-        verifyStored(5 to 100, 60 to 2400)
-    }
-
-    @Test
-    fun longGap_KeptOverRestart() {
-        // The gap interval is saved with its mark, so after a restart the windows that
-        // start inside it are still left out.
-        hourThenGap(newSteps())
-        now = now.plusSeconds(300)
-        newSteps().receive(uri("steps=4300"))
-        verifyStored(5 to 100, 60 to 2400)
-    }
-
-    @Test
-    fun gapOverMaxKept_BaselineOnly() {
-        // No window is longer than 180 minutes, so a longer gap could be in none of them.
-        val steps = newSteps()
-        steps.receive(uri("steps=1000"))
-        now = t0.plusSeconds(300)
-        steps.receive(uri("steps=1100"))
-        verifyStored(5 to 100)
-        now = now.plusMillis(GarminSteps.MAX_KEPT_GAP_MS + 1)
-        steps.receive(uri("steps=5000"))
-        verifyNoMoreInteractions(loopHub)
-        assertEquals("", savedHistory)
-        assertEquals(5000, lastTotal)
-    }
-
-    @Test
-    fun longGapOverMidnight_BaselineOnly() {
-        // The counter is reset at midnight: a higher total after a gap over midnight may
-        // still be today's steps only, so the gap is not kept.
-        now = Instant.parse("2026-10-01T23:30:00Z")
-        val steps = newSteps()
-        steps.receive(uri("steps=9000"))
-        now = now.plusSeconds(2400)  // 00:10 next day
-        steps.receive(uri("steps=9100"))
-        verifyNoInteractions(loopHub)
-        assertEquals("", savedHistory)
-        assertEquals(9100, lastTotal)
+        verifyStored(5 to 50)
     }
 
     @Test
@@ -433,6 +361,170 @@ class GarminStepsTest : TestBase() {
         )
         verifyNoMoreInteractions(loopHub)
         assertEquals(1000 + 10 * rounds, lastTotal)
+    }
+
+    /** `stepsPrev` as the watch face sends it: `<epoch sec>:<total>`, comma between. */
+    private fun prev(vararg totals: Pair<Instant, Int>) =
+        totals.joinToString(",") { (time, total) -> "${time.epochSecond}:$total" }
+
+    /** A reading at t0 + 5 min, then the phone out of reach until t0 + 30 min: the watch
+     *  kept 100 steps every 5 min in between. */
+    private fun outage(): String {
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=1100"))
+        now = t0.plusSeconds(1800)
+        val kept = prev(
+            t0.plusSeconds(600) to 1200, t0.plusSeconds(900) to 1300,
+            t0.plusSeconds(1200) to 1400, t0.plusSeconds(1500) to 1500
+        )
+        steps.receive(uri("steps=1600&stepsPrev=$kept"))
+        return kept
+    }
+
+    @Test
+    fun stepsPrev_FillsTheGap() {
+        // Without stepsPrev the 25 minutes since the last reading would be a long gap
+        // (baseline only). With the kept totals every window is right at once.
+        outage()
+        verifyStored(5 to 100, 10 to 200, 15 to 300, 30 to 600)
+        // The kept totals are stored at their own time, so the steps graph has no hole.
+        verify(loopHub).storeStepsCount(
+            eq(t0.plusSeconds(1500)), eq(mapOf(5 to 100, 10 to 200, 15 to 300)), eq("Garmin")
+        )
+        assertEquals(1600, lastTotal)
+        assertEquals(now.toEpochMilli(), lastTs)
+    }
+
+    @Test
+    fun stepsPrev_SentAgain_CountedOnce() {
+        // The answer got lost, so the watch sends the same list again with the next
+        // reading: AAPS already has those totals and leaves them out.
+        val kept = outage()
+        val steps = newSteps()
+        now = t0.plusSeconds(2100)
+        steps.receive(uri("steps=1700&stepsPrev=$kept"))
+        verifyStored(5 to 100, 10 to 200, 15 to 300, 30 to 600)
+        assertEquals(1700, lastTotal)
+    }
+
+    @Test
+    fun stepsPrev_UrlEncoded() {
+        // makeWebRequest may encode ":" and "," as %3A and %2C.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        now = t0.plusSeconds(900)
+        val kept = "${t0.plusSeconds(300).epochSecond}%3A1100%2C${t0.plusSeconds(600).epochSecond}%3A1200"
+        steps.receive(uri("steps=1300&stepsPrev=$kept"))
+        verifyStored(5 to 100, 10 to 200, 15 to 300)
+    }
+
+    @Test
+    fun stepsPrev_WithoutEarlierReading() {
+        // AAPS has no total yet: the oldest kept total is the baseline.
+        now = t0.plusSeconds(600)
+        newSteps().receive(uri("steps=1200&stepsPrev=${prev(t0 to 1000, t0.plusSeconds(300) to 1100)}"))
+        verifyStored(5 to 100, 10 to 200)
+        assertEquals(1200, lastTotal)
+    }
+
+    @Test
+    fun stepsPrev_OldFutureAndBroken_LeftOut() {
+        // Only totals between the last reading and now count; text that cannot be read
+        // is skipped.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        now = t0.plusSeconds(600)
+        val kept = listOf(
+            "${t0.minusSeconds(300).epochSecond}:900",  // before the last reading
+            "${t0.plusSeconds(300).epochSecond}:1100",
+            "x:y", "123",
+            "${t0.plusSeconds(900).epochSecond}:9999",  // after now
+        ).joinToString(",")
+        steps.receive(uri("steps=1200&stepsPrev=$kept"))
+        verifyStored(5 to 100, 10 to 200)
+        assertEquals(1200, lastTotal)
+    }
+
+    @Test
+    fun stepsPrev_OverMidnight() {
+        // The watch kept totals over midnight, where its counter was reset: the
+        // midnight rule handles them as if they had come one by one.
+        val day = Instant.parse("2026-10-01T23:45:00Z")
+        now = day
+        val steps = newSteps()
+        steps.receive(uri("steps=9000"))
+        now = day.plusSeconds(1500)  // 00:10
+        val kept = prev(
+            day.plusSeconds(300) to 9050, day.plusSeconds(600) to 9100,  // 23:50, 23:55
+            day.plusSeconds(900) to 0, day.plusSeconds(1200) to 50,      // 00:00, 00:05
+        )
+        steps.receive(uri("steps=100&stepsPrev=$kept"))
+        verifyStored(5 to 50, 10 to 100, 15 to 100)
+        assertEquals(100, lastTotal)
+    }
+
+    @Test
+    fun stepsPrev_WithoutSteps_Ignored() {
+        // stepsPrev only comes with steps=; on its own it is not read.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000"))
+        now = t0.plusSeconds(600)
+        steps.receive(uri("stepsPrev=${prev(t0.plusSeconds(300) to 1100)}"))
+        verifyNoInteractions(loopHub)
+        assertEquals(1000, lastTotal)
+    }
+
+    @Test
+    fun otherWatchModel_NewBaselineWithoutSpike() {
+        // As in a log 17/10: the Connect IQ simulator (another model) sent steps=0 between two
+        // readings of the watch. Without the model check the watch's next total (8578) was
+        // stored as steps.
+        val steps = newSteps()
+        steps.receive(uri("steps=8578&device=006-B4024-00_WF"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=0&device=006-B4603-00_WFA"))
+        now = t0.plusSeconds(360)
+        steps.receive(uri("steps=8578&device=006-B4024-00_WF"))
+        verifyNoInteractions(loopHub)
+        now = t0.plusSeconds(660)
+        steps.receive(uri("steps=8678&device=006-B4024-00_WF"))
+        verifyStored(5 to 100)
+        assertEquals("006-B4024-00", store[GarminSteps.PREF_GARMIN_LAST_DEVICE])
+    }
+
+    @Test
+    fun otherWatchFaceSameWatch_NoNewBaseline() {
+        // device= ends with the watch face (_WF, _WF3 ...): another watch face on the same
+        // watch is the same model and goes on counting.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000&device=006-B4024-00_WF"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=1100&device=006-B4024-00_WF3"))
+        verifyStored(5 to 100)
+    }
+
+    @Test
+    fun withoutDevice_NotChecked() {
+        // A watch face that does not send device= is not checked, as before.
+        val steps = newSteps()
+        steps.receive(uri("steps=1000&device=006-B4024-00_WF"))
+        now = t0.plusSeconds(300)
+        steps.receive(uri("steps=1100"))
+        verifyStored(5 to 100)
+        assertEquals("006-B4024-00", store[GarminSteps.PREF_GARMIN_LAST_DEVICE])
+    }
+
+    @Test
+    fun otherWatchModel_KeptTotalsStartFromItsOldest() {
+        // The other watch's kept totals: the oldest is the new baseline, the rest count.
+        val steps = newSteps()
+        steps.receive(uri("steps=9000&device=006-B4024-00_WF"))
+        now = t0.plusSeconds(900)
+        val kept = prev(t0.plusSeconds(300) to 500, t0.plusSeconds(600) to 600)
+        steps.receive(uri("steps=700&stepsPrev=$kept&device=006-B4315-00_WF"))
+        verifyStored(5 to 100, 10 to 200)
     }
 
     @Test
