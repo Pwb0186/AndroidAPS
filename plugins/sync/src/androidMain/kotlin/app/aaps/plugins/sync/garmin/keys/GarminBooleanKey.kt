@@ -13,6 +13,8 @@ enum class GarminBooleanKey(
 ) : BooleanPreferenceKey {
 
     LocalHttpServer("communication_http", false, title = SyncStrings.garmin_local_http_server, defaultedBySM = true, hideParentScreenIfHidden = true),
+    // Off by default: lets a watch app set a temp target (see GarminTempTarget).
+    TempTargetFromWatch("garmin_tt_from_watch", false, title = SyncStrings.garmin_tt_from_watch),
     ;
 
 }

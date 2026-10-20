@@ -11,6 +11,7 @@ import app.aaps.core.data.model.RM
 import app.aaps.core.data.model.TB
 import app.aaps.core.data.model.TT
 import app.aaps.core.data.plugin.PluginType
+import app.aaps.core.interfaces.bolus.BatchExecutor
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
@@ -64,11 +65,11 @@ import kotlin.reflect.KClass
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
- * carbs, heart rate, steps and pump disconnect events from the device. It communicates
+ * carbs, heart rate, steps, pump disconnect events and temp targets from the device. It communicates
  * via HTTP on localhost or Garmin's native CIQ library.
  *
  * Push-to-pull (the registry of watch apps and the push throttle) is in GarminV2Push,
- * steps are in GarminSteps.
+ * steps are in GarminSteps, temp targets from the watch are in GarminTempTarget.
  */
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
 @IntKey(370)
@@ -82,7 +83,8 @@ class GarminPlugin(
     private val context: Context,
     private val loopHub: LoopHub,
     private val persistenceLayer: PersistenceLayer,
-    notificationManager: NotificationManager
+    notificationManager: NotificationManager,
+    batchExecutor: BatchExecutor
 ) : PluginBaseWithPreferences(
     pluginDescription = PluginDescription()
         .mainType(PluginType.SYNC)
@@ -104,6 +106,10 @@ class GarminPlugin(
     /** Step counts from the watch (/get?steps=...). See GarminSteps.kt. */
     @VisibleForTesting
     val garminSteps = GarminSteps(aapsLogger, sp, loopHub, { clock })
+
+    /** Temp target from the watch (/tt/prepare, /tt/commit). See GarminTempTarget.kt. */
+    @VisibleForTesting
+    val garminTempTarget = GarminTempTarget(aapsLogger, preferences, resourceHelper, batchExecutor) { clock.millis() }
 
     companion object {
         // The AAPS key in a logged request (?key=... / &key=...).
@@ -270,6 +276,8 @@ class GarminPlugin(
                 registerEndpoint("/carbs", requestHandler(::onPostCarbs))
                 registerEndpoint("/connect", requestHandler(::onConnectPump))
                 registerEndpoint("/sgv.json", requestHandler(::onSgv))
+                registerEndpoint("/tt/prepare", requestHandler(garminTempTarget::prepare))
+                registerEndpoint("/tt/commit", requestHandler(garminTempTarget::commit))
                 awaitReady(wait)
             }
         } else if (server != null) {
@@ -647,7 +655,8 @@ class GarminPlugin(
         items = listOf(
             GarminBooleanKey.LocalHttpServer,
             GarminIntKey.LocalHttpPort,
-            GarminStringKey.RequestKey
+            GarminStringKey.RequestKey,
+            GarminBooleanKey.TempTargetFromWatch
         ),
         icon = pluginDescription.icon
     )
