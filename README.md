@@ -6,7 +6,7 @@ This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes 
 > Use it at your own risk.
 
 **Branch:** `GarminPush+Steps-dev` (AAPS `dev` + the Garmin changes in one commit).
-**Same changes on AAPS 4.0.0-beta1:** branch `GarminPush+Steps-V4.0.0-beta1`.
+**Same changes on AAPS 4.0.0-rc1:** branch `GarminPush+Steps-V4.0.0-rc1`.
 **Watch face:** [aaps-garmin-push-watchface](https://github.com/Pwb0186/aaps-garmin-push-watchface),
 a Connect IQ watch face that uses all of this.
 **Other branches:**
@@ -57,26 +57,29 @@ For each reading AAPS stores one record per window (5, 10, 15, 30, 60, 180 min) 
 the steps in that window. Rules for the total:
 
 - The first value is only a starting point. Nothing is stored.
-- 12 minutes to 3 hours since the last value, on the same day (watch out of range,
-  AAPS stopped): the steps of the gap are known, but not when in the gap they were
-  taken. A window that holds the whole gap is stored with the right count. A window
-  that starts inside the gap is left out until it no longer does.
-- More than 3 hours since the last value, or a gap over midnight: only the starting
-  point moves.
+- While AAPS cannot be reached (phone out of range, Bluetooth off, AAPS stopped), the
+  watch face keeps its totals (up to 3 hours) and sends them with the next request
+  (`stepsPrev`). AAPS reads them at their own time, so there is no gap: all windows are
+  right at once and the steps graph is filled in.
+- Without kept totals (a watch face that does not send them, or a longer gap), more than
+  12 minutes since the last value: only the starting point moves (we do not know when
+  those steps were taken).
 - At local midnight the watch resets its counter. This is handled.
 - A lower value on the same day (for example a new watch, or a second watch sending
   to the same AAPS): only the starting point moves.
-- Only one watch should send steps to an AAPS. A second watch with a higher total is
-  counted as steps. When you switch watch, wait at least 3 hours after the last
-  steps were sent, or turn off "Send steps to AAPS" in the watch face settings.
+- A watch of another model (the part number the watch face sends in `device=`) starts
+  again from a new starting point, so switching between, for example, a daily watch and a
+  sport watch never counts the difference as steps. Two watches that send at the same
+  time store no steps, so only one watch should send steps to an AAPS (turn off "Send
+  steps to AAPS" on the other). Two watches of the same model cannot be told apart.
 - A delta of 0 steps is stored too, so a rule like "fewer than 100 steps" works.
 - The steps of a reading are spread evenly over the time since the last reading.
-- A window is only stored when the history covers all of it. After the first reading,
-  a gap of more than 3 hours or a counter drop, the 5 minute window comes after
-  5 minutes and the 180 minute window after 3 hours. Until then the trigger finds no
-  record for that window, never a count that is too low or an average.
-- The history is saved, so after an AAPS restart the windows go on (with the gap rule
-  above when it took more than 12 minutes).
+- A window is only stored when the history covers all of it. After the first reading or a
+  long gap, the 5 minute window comes after 5 minutes and the 180 minute
+  window after 3 hours. Until then the trigger finds no record for that window, never
+  a count that is too low.
+- The history is saved, so after an AAPS restart the windows go on (when it took more
+  than 12 minutes, only with the totals the watch face kept).
 
 Limit: the watch sends steps about every 5 minutes, and the "Steps count" trigger only
 looks at records from the last 5 minutes. When the watch answers late or a glucose
@@ -109,7 +112,7 @@ Wear OS, the loop, pumps and all other plugins are plain AAPS `dev`.
 
 ## Tested
 - Forerunner 955 with my own watch face.
-- The same logic runs daily on AAPS 3.4 (master) and on `GarminPush+Steps-V4.0.0-beta1`.
+- The same logic runs daily on AAPS 3.4 (master) and on `GarminPush+Steps-V4.0.0-rc1`.
 - Tested: 24 hours, switching between 6 watch faces, Bluetooth off, phone restart,
   Garmin Connect force stop, watch out of range (6 and 24 min), carbs entered,
   AAPS key set, plugin quickly off/on, midnight, Automation rules on steps
