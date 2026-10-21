@@ -11,7 +11,6 @@ import app.aaps.core.interfaces.clientcontrol.FailureReason
 import app.aaps.core.keys.StringNonKey
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.plugins.sync.garmin.keys.GarminBooleanKey
-import app.aaps.plugins.sync.garmin.keys.GarminStringKey
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -45,7 +44,6 @@ class GarminTempTargetTest : TestBaseWithProfile() {
     fun setup() {
         tt = GarminTempTarget(aapsLogger, preferences, rh, batchExecutor) { nowMs }
         whenever(preferences.get(GarminBooleanKey.TempTargetFromWatch)).thenReturn(true)
-        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("secret")
         // No presets saved: AAPS' default preset values are used.
         whenever(preferences.get(StringNonKey.TempTargetPresets)).thenReturn("")
         // doReturn: calling rh.gs() inside whenever() would hit the test base's strict text answer.
@@ -106,13 +104,6 @@ class GarminTempTargetTest : TestBaseWithProfile() {
             verify(batchExecutor, never()).prepare(any(), any(), any())
             verify(batchExecutor, never()).commit(any(), any(), any(), any())
         }
-    }
-
-    @Test
-    fun noKeySet_refused() {
-        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("")
-        assertFalse(get("/tt/prepare?preset=activity").get("ok").asBoolean)
-        runBlocking { verify(batchExecutor, never()).prepare(any(), any(), any()) }
     }
 
     @Test

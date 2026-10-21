@@ -15,7 +15,6 @@ import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.clientcontrol.failText
 import app.aaps.plugins.sync.garmin.keys.GarminBooleanKey
-import app.aaps.plugins.sync.garmin.keys.GarminStringKey
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import kotlinx.coroutines.runBlocking
@@ -30,9 +29,9 @@ import java.net.URI
  * applies the parked temp target, once.
  *
  * The endpoints are on localhost, where any app on the phone can call them. They therefore only
- * work when "Temp target from Garmin watch" is on (off by default) and an AAPS key is set (the
- * request handler then refuses requests without the key). Only the presets from the AAPS temp
- * target settings can be set, and only the newest id is accepted, for [PREPARED_TTL_MS].
+ * work when "Temp target from Garmin watch" is on (off by default), and the request handler only
+ * lets them through with the AAPS key. Only the presets from the AAPS temp target settings can be
+ * set, and only the newest id is accepted, for [PREPARED_TTL_MS].
  */
 class GarminTempTarget(
     private val aapsLogger: AAPSLogger,
@@ -102,9 +101,8 @@ class GarminTempTarget(
     }
 
     private fun refusal(): String? = when {
-        !preferences.get(GarminBooleanKey.TempTargetFromWatch)  -> "Temp target from Garmin is off in AAPS"
-        preferences.get(GarminStringKey.RequestKey).isEmpty()   -> "Set an AAPS key in the Garmin settings"
-        else                                                    -> null
+        !preferences.get(GarminBooleanKey.TempTargetFromWatch) -> "Temp target from Garmin is off in AAPS"
+        else                                                   -> null
     }
 
     private fun failure(progress: ActionProgress): String = when (progress) {

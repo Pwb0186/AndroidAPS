@@ -273,11 +273,11 @@ class GarminPlugin(
             server?.close()
             server = HttpServer(aapsLogger, port).apply {
                 registerEndpoint("/get", requestHandler(::onGetBloodGlucose))
-                registerEndpoint("/carbs", requestHandler(::onPostCarbs))
-                registerEndpoint("/connect", requestHandler(::onConnectPump))
+                registerEndpoint("/carbs", requestHandler(::onPostCarbs, keyRequired = true))
+                registerEndpoint("/connect", requestHandler(::onConnectPump, keyRequired = true))
                 registerEndpoint("/sgv.json", requestHandler(::onSgv))
-                registerEndpoint("/tt/prepare", requestHandler(garminTempTarget::prepare))
-                registerEndpoint("/tt/commit", requestHandler(garminTempTarget::commit))
+                registerEndpoint("/tt/prepare", requestHandler(garminTempTarget::prepare, keyRequired = true))
+                registerEndpoint("/tt/commit", requestHandler(garminTempTarget::commit, keyRequired = true))
                 awaitReady(wait)
             }
         } else if (server != null) {
@@ -413,16 +413,19 @@ class GarminPlugin(
     }
 
     @VisibleForTesting
-    fun requestHandler(action: (URI) -> CharSequence) = { caller: SocketAddress, uri: URI, _: String? ->
-        // Same rule as the original Garmin plugin, so older watch faces and data fields
-        // keep working: with no key set, every endpoint is open (including /carbs
-        // and /connect); with a key set, every endpoint needs it. On a wrong key the key is
-        // pushed to the watch apps (V1 message), so an old watch face can pick it up.
+    fun requestHandler(action: (URI) -> CharSequence, keyRequired: Boolean = false) = { caller: SocketAddress, uri: URI, _: String? ->
+        // Reading (/get, /sgv.json) is open: any app on the phone could read the same values
+        // elsewhere, and the watch faces and data fields then need no key. Everything that
+        // changes treatment (/carbs, /connect, temp target) needs the AAPS key, and is refused
+        // while no key is set, because any app on the phone can call localhost.
         val key = garminAapsKey
         val deviceKey = getQueryParameter(uri, "key")
-        if (key.isNotEmpty() && key != deviceKey) {
+        if (keyRequired && key.isEmpty()) {
+            aapsLogger.warn(LTag.GARMIN, "No AAPS key set, refused ${uri.path} from $caller")
+            HttpURLConnection.HTTP_FORBIDDEN to "{}"
+        } else if (keyRequired && key != deviceKey) {
             aapsLogger.warn(LTag.GARMIN, "Invalid AAPS Key from $caller for ${uri.path}")
-            sendPhoneAppMessage()
+            // Slows down guessing the key.
             Thread.sleep(1000L)
             HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
         } else {

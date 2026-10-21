@@ -223,7 +223,7 @@ class GarminPluginTest : TestBaseWithProfile() {
     fun requestHandler_NoKey() {
         whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("")
         val uri = createUri(emptyMap())
-        val handler = gp.requestHandler { u: URI -> assertEquals(uri, u); "OK" }
+        val handler = gp.requestHandler({ u: URI -> assertEquals(uri, u); "OK" })
         assertEquals(
             HttpURLConnection.HTTP_OK to "OK",
             handler(mock<SocketAddress>(), uri, null)
@@ -234,7 +234,7 @@ class GarminPluginTest : TestBaseWithProfile() {
     fun requestHandler_KeyProvided() {
         whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("")
         val uri = createUri(mapOf("key" to "foo"))
-        val handler = gp.requestHandler { u: URI -> assertEquals(uri, u); "OK" }
+        val handler = gp.requestHandler({ u: URI -> assertEquals(uri, u); "OK" })
         assertEquals(
             HttpURLConnection.HTTP_OK to "OK",
             handler(mock<SocketAddress>(), uri, null)
@@ -245,44 +245,48 @@ class GarminPluginTest : TestBaseWithProfile() {
     fun requestHandler_KeyRequiredAndProvided() {
         whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("foo")
         val uri = createUri(mapOf("key" to "foo"))
-        val handler = gp.requestHandler { u: URI -> assertEquals(uri, u); "OK" }
+        val handler = gp.requestHandler({ u: URI -> assertEquals(uri, u); "OK" }, keyRequired = true)
         assertEquals(
             HttpURLConnection.HTTP_OK to "OK",
             handler(mock<SocketAddress>(), uri, null)
         )
-
     }
 
     @Test
-    fun requestHandler_KeyRequired() {
-        gp.garminMessengerField = mock<GarminMessenger>()
-
+    fun requestHandler_KeyRequired_WrongOrMissingKey() {
         whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("foo")
-        val uri = createUri(emptyMap())
-        val handler = gp.requestHandler { u: URI -> assertEquals(uri, u); "OK" }
-        assertEquals(
-            HttpURLConnection.HTTP_UNAUTHORIZED to "{}",
-            handler(mock<SocketAddress>(), uri, null)
-        )
+        val handler = gp.requestHandler({ "OK" }, keyRequired = true)
+        assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(emptyMap()), null))
+        assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(mapOf("key" to "bar")), null))
+    }
 
-        val captor = ArgumentCaptor.forClass(Any::class.java)
-        verify(gp.garminMessenger).sendMessage(captor.capture() ?: "")
-        @Suppress("UNCHECKED_CAST")
-        val r = captor.value as Map<String, Any>
-        assertEquals("foo", r["key"])
-        assertEquals("glucose", r["command"])
-        assertEquals("D", r["profile"])
-        assertEquals("", r["encodedGlucose"])
-        assertEquals(0.0, r["remainingInsulin"])
-        assertEquals("mmoll", r["glucoseUnit"])
-        assertEquals(0.0, r["temporaryBasalRate"])
-        assertEquals(false, r["connected"])
-        assertEquals(clock.instant().epochSecond, r["timestamp"])
-        verify(loopHub).getGlucoseValues(getGlucoseValuesFrom, true)
-        verify(loopHub).insulinOnboard
-        verify(loopHub).temporaryBasal
-        verify(loopHub).isConnected
-        verify(loopHub).glucoseUnit
+    @Test
+    fun requestHandler_KeyRequired_NoKeySet_Refused() {
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("")
+        val handler = gp.requestHandler({ "OK" }, keyRequired = true)
+        assertEquals(HttpURLConnection.HTTP_FORBIDDEN to "{}", handler(mock<SocketAddress>(), createUri(emptyMap()), null))
+    }
+
+    @Test
+    fun requestHandler_Open_KeySetButNotSent() {
+        // Reading needs no key, also when a key is set.
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("foo")
+        val handler = gp.requestHandler({ "OK" })
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), createUri(emptyMap()), null))
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), createUri(mapOf("key" to "bar")), null))
+    }
+
+    @Test
+    fun setupHttpServer_CommandsNeedKey(): Unit = runBlocking {
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("")
+        whenever(preferences.get(GarminBooleanKey.LocalHttpServer)).thenReturn(true)
+        whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28894)
+        gp.setupHttpServer(Duration.ofSeconds(10))
+        for (path in listOf("/carbs?carbs=10", "/connect?disconnectMinutes=30", "/tt/prepare?preset=activity", "/tt/commit?id=1")) {
+            val resp = URI("http://127.0.0.1:28894$path").toURL().openConnection() as HttpURLConnection
+            assertEquals(HttpURLConnection.HTTP_FORBIDDEN, resp.responseCode, path)
+        }
+        gp.onStop()
     }
 
     @Test
@@ -506,7 +510,7 @@ class GarminPluginTest : TestBaseWithProfile() {
         // uri.query (already decoded) a second time turned it into a space (401).
         whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("a+b")
         val uri = URI("http://foo?key=a%2Bb")
-        val handler = gp.requestHandler { "OK" }
+        val handler = gp.requestHandler({ "OK" }, keyRequired = true)
         assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
     }
 
@@ -514,7 +518,7 @@ class GarminPluginTest : TestBaseWithProfile() {
     fun requestHandler_KeyWithPercent() {
         whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("100%")
         val uri = URI("http://foo?key=100%25")
-        val handler = gp.requestHandler { "OK" }
+        val handler = gp.requestHandler({ "OK" }, keyRequired = true)
         assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
     }
 
