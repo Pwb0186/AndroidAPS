@@ -38,6 +38,7 @@ class GarminTempTarget(
     private val preferences: Preferences,
     private val rh: TextResolver,
     private val batchExecutor: BatchExecutor,
+    private val activeTempTarget: () -> TT?,
     private val now: () -> Long,
 ) {
 
@@ -60,8 +61,11 @@ class GarminTempTarget(
             "activity" -> presetAction(TT.Reason.ACTIVITY)
             "eating"   -> presetAction(TT.Reason.EATING_SOON)
             "hypo"     -> presetAction(TT.Reason.HYPOGLYCEMIA)
-            // Duration 0 cancels the running temp target, as from the Wear watch.
-            "cancel"   -> BatchAction.TempTarget(TT.Reason.CUSTOM.text, 0.0, 0.0, 0, 0)
+            // Duration 0 cancels the running temp target, as from the Wear watch. Without a running
+            // one AAPS would still answer "applied", which would tell the user something was cancelled.
+            "cancel"   ->
+                if (activeTempTarget() == null) return error("No temp target running")
+                else BatchAction.TempTarget(TT.Reason.CUSTOM.text, 0.0, 0.0, 0, 0)
             else       -> return error("Unknown preset")
         }
         val progress = runBlocking { batchExecutor.prepare(listOf(action), Sources.Garmin, label()) }

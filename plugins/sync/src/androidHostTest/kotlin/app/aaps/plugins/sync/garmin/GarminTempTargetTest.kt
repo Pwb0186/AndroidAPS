@@ -25,6 +25,7 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
+import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
@@ -36,13 +37,14 @@ class GarminTempTargetTest : TestBaseWithProfile() {
     @Mock private lateinit var batchExecutor: BatchExecutor
 
     private var nowMs = 1_000_000L
+    private var activeTt: TT? = null
     private lateinit var tt: GarminTempTarget
 
     private val preparedId = 1_792_500_000_123L
 
     @BeforeEach
     fun setup() {
-        tt = GarminTempTarget(aapsLogger, preferences, rh, batchExecutor) { nowMs }
+        tt = GarminTempTarget(aapsLogger, preferences, rh, batchExecutor, { activeTt }) { nowMs }
         whenever(preferences.get(GarminBooleanKey.TempTargetFromWatch)).thenReturn(true)
         // No presets saved: AAPS' default preset values are used.
         whenever(preferences.get(StringNonKey.TempTargetPresets)).thenReturn("")
@@ -82,10 +84,19 @@ class GarminTempTargetTest : TestBaseWithProfile() {
 
     @Test
     fun prepare_cancel_isTempTargetWithDurationZero() {
+        activeTt = mock()
         get("/tt/prepare?preset=cancel&key=secret")
         val captor = argumentCaptor<List<BatchAction>>()
         runBlocking { verify(batchExecutor).prepare(captor.capture(), any(), any()) }
         assertEquals(0, (captor.firstValue.single() as BatchAction.TempTarget).durationMinutes)
+    }
+
+    @Test
+    fun prepare_cancel_noRunningTempTarget_refused() {
+        val jo = get("/tt/prepare?preset=cancel&key=secret")
+        assertFalse(jo["ok"].asBoolean)
+        assertEquals("No temp target running", jo["error"].asString)
+        runBlocking { verify(batchExecutor, never()).prepare(any(), any(), any()) }
     }
 
     @Test
