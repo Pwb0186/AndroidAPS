@@ -70,7 +70,7 @@ class GarminPluginTest : TestBaseWithProfile() {
         doAnswer { i -> spStore[i.getArgument(0)] = i.getArgument<String>(1); null }
             .whenever(garminSp).putString(any<String>(), any<String>())
         // rxBus and notificationManager: not used by the code under test.
-        gp = GarminPlugin(aapsLogger, rh, preferences, garminSp, context, loopHub, persistenceLayer, mock(), mock())
+        gp = GarminPlugin(aapsLogger, rh, preferences, garminSp, context, loopHub, persistenceLayer, mock(), mock(), mock())
         gp.clock = clock
         whenever(loopHub.currentProfileName).thenReturn("Default")
         whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28890)

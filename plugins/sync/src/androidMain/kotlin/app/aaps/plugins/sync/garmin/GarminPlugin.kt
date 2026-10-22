@@ -65,11 +65,12 @@ import kotlin.reflect.KClass
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
- * carbs, heart rate, steps, pump disconnect events and temp targets from the device. It communicates
+ * carbs, heart rate, steps, pump disconnect events, temp targets and boluses from the device. It communicates
  * via HTTP on localhost or Garmin's native CIQ library.
  *
  * Push-to-pull (the registry of watch apps and the push throttle) is in GarminV2Push,
- * steps are in GarminSteps, temp targets from the watch are in GarminTempTarget.
+ * steps are in GarminSteps, temp targets from the watch are in GarminTempTarget, boluses in
+ * GarminBolus.
  */
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
 @IntKey(370)
@@ -84,7 +85,9 @@ class GarminPlugin(
     private val loopHub: LoopHub,
     private val persistenceLayer: PersistenceLayer,
     notificationManager: NotificationManager,
-    batchExecutor: BatchExecutor
+    batchExecutor: BatchExecutor,
+    /** Bolus wizard, Quick Wizard and stop bolus from the watch. See GarminBolus.kt. */
+    private val garminBolus: GarminBolus
 ) : PluginBaseWithPreferences(
     pluginDescription = PluginDescription()
         .mainType(PluginType.SYNC)
@@ -278,6 +281,11 @@ class GarminPlugin(
                 registerEndpoint("/sgv.json", requestHandler(::onSgv))
                 registerEndpoint("/tt/prepare", requestHandler(garminTempTarget::prepare, keyRequired = true))
                 registerEndpoint("/tt/commit", requestHandler(garminTempTarget::commit, keyRequired = true))
+                registerEndpoint("/wizard/prepare", requestHandler(garminBolus::prepareWizard, keyRequired = true))
+                registerEndpoint("/qw/list", requestHandler(garminBolus::quickWizardList, keyRequired = true))
+                registerEndpoint("/qw/prepare", requestHandler(garminBolus::prepareQuickWizard, keyRequired = true))
+                registerEndpoint("/bolus/commit", requestHandler(garminBolus::commit, keyRequired = true))
+                registerEndpoint("/bolus/stop", requestHandler(garminBolus::stop, keyRequired = true))
                 awaitReady(wait)
             }
         } else if (server != null) {
@@ -659,7 +667,8 @@ class GarminPlugin(
             GarminBooleanKey.LocalHttpServer,
             GarminIntKey.LocalHttpPort,
             GarminStringKey.RequestKey,
-            GarminBooleanKey.TempTargetFromWatch
+            GarminBooleanKey.TempTargetFromWatch,
+            GarminBooleanKey.BolusFromWatch
         ),
         icon = pluginDescription.icon
     )
