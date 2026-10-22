@@ -280,7 +280,7 @@ class GarminBolusTest : TestBaseWithProfile() {
         whenever(quickWizard.list()).thenReturn(arrayListOf(now, phoneOnly))
         whenever(garminCommandQueue.bolusInQueue()).thenReturn(false)
         whenever(garminCommandQueue.isRunning(Command.CommandType.BOLUS)).thenReturn(true)
-        val jo = json(bolus.status(ttActive = true))
+        val jo = json(bolus.status(ttActive = true).toString())
         assertTrue(jo["ok"].asBoolean)
         assertTrue(jo["bolusRunning"].asBoolean)
         assertTrue(jo["ttActive"].asBoolean)
@@ -290,9 +290,33 @@ class GarminBolusTest : TestBaseWithProfile() {
     @Test
     fun status_nothingRunning() {
         whenever(quickWizard.list()).thenReturn(arrayListOf())
-        val jo = json(bolus.status(ttActive = false))
+        val jo = json(bolus.status(ttActive = false).toString())
         assertFalse(jo["bolusRunning"].asBoolean)
         assertFalse(jo["ttActive"].asBoolean)
         assertEquals(0, jo["qwCount"].asInt)
+    }
+
+    @Test
+    fun wizard_mealType_splitsCarbsLikeAaps() {
+        bolus.prepareWizard(uri("carbs=100&type=pizza"))
+        val captor = argumentCaptor<WizardExecutor.WizardSource>()
+        runBlocking { verify(wizardExecutor).prepare(captor.capture(), any()) }
+        val inputs = (captor.firstValue as WizardExecutor.WizardSource.Manual).inputs
+        assertEquals(80, inputs.carbs)
+        assertEquals(35, inputs.eCarbsGrams)
+        assertEquals(60, inputs.eCarbsDelayMinutes)
+        assertEquals(3, inputs.eCarbsDurationHours)
+    }
+
+    @Test
+    fun wizard_noType_isBread_unknownRefused() {
+        bolus.prepareWizard(uri("carbs=40"))
+        val captor = argumentCaptor<WizardExecutor.WizardSource>()
+        runBlocking { verify(wizardExecutor).prepare(captor.capture(), any()) }
+        val inputs = (captor.firstValue as WizardExecutor.WizardSource.Manual).inputs
+        assertEquals(40, inputs.carbs)
+        assertEquals(0, inputs.eCarbsGrams)
+        assertEquals(0, inputs.eCarbsDelayMinutes)
+        assertFalse(json(bolus.prepareWizard(uri("carbs=40&type=soup")))["ok"].asBoolean)
     }
 }

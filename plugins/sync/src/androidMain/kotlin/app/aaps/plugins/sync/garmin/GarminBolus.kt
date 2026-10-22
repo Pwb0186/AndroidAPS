@@ -51,7 +51,8 @@ import java.time.LocalTime
  *
  * /bolus/stop only needs the key: stopping a bolus is a safety action, as on the Wear watch.
  * /status only reads, so the watch can show the menu items that can be used and close its stop
- * screen when the bolus is done.
+ * screen when the bolus is done. /wizard/prepare&type= splits the carbs by meal type like the AAPS
+ * bolus wizard.
  */
 @SingleIn(AppScope::class)
 @Inject
@@ -76,6 +77,17 @@ class GarminBolus(
         const val PREPARED_TTL_MS = 60_000L
     }
 
+    /**
+     * The meal types of the AAPS bolus wizard, with its numbers (they live in the ui module, which
+     * this plugin does not use).
+     */
+    @VisibleForTesting
+    enum class MealType(val param: String, val carbsPercent: Int, val eCarbsPercent: Int, val eCarbsDelayMinutes: Int, val eCarbsDurationHours: Int) {
+        BREAD("bread", 100, 0, 0, 0),
+        CAKE("cake", 90, 20, 60, 2),
+        PIZZA("pizza", 80, 35, 60, 3)
+    }
+
     @VisibleForTesting
     var now: () -> Long = { System.currentTimeMillis() }
 
@@ -91,11 +103,15 @@ class GarminBolus(
     fun prepareWizard(uri: URI): CharSequence {
         refusal()?.let { return error(it) }
         val carbs = uri.queryParameter("carbs")?.toIntOrNull()?.takeIf { it >= 0 } ?: return error("Missing carbs")
+        val meal = MealType.entries.firstOrNull { it.param == (uri.queryParameter("type") ?: "bread") }
+            ?: return error("Unknown meal type")
         val bg = iobCobCalculator.ads.actualBg() ?: return error(rh.gs(CoreUiStrings.wizard_no_actual_bg))
+        // Split as the AAPS bolus wizard does: part of the carbs now, part as eCarbs later.
+        val eCarbs = carbs * meal.eCarbsPercent / 100
         // The same choices as the Wear watch's wizard (Wear settings), so the two watches compute alike.
         val inputs = WizardBolusExecutor.WizardInputs(
             bg = bg.valueToUnits(profileFunction.getUnits()),
-            carbs = carbs,
+            carbs = carbs * meal.carbsPercent / 100,
             percentage = preferences.get(IntKey.OverviewBolusPercentage),
             directCorrection = 0.0,
             carbTime = 0,
@@ -106,10 +122,13 @@ class GarminBolus(
             useTrend = preferences.get(BooleanKey.WearWizardTrend),
             alarm = false,
             notes = "",
+            eCarbsGrams = eCarbs,
+            eCarbsDelayMinutes = if (eCarbs > 0) meal.eCarbsDelayMinutes else 0,
+            eCarbsDurationHours = if (eCarbs > 0) meal.eCarbsDurationHours else 0,
             source = Sources.Garmin
         )
         val progress = runBlocking { wizardExecutor.prepare(WizardExecutor.WizardSource.Manual(inputs), wizardLabel()) }
-        return park(progress, byWizard = true, what = "wizard $carbs g")
+        return park(progress, byWizard = true, what = "wizard $carbs g ${meal.param}")
     }
 
     /** The Quick Wizard buttons set to show on the watch whose time window is now. */
@@ -187,12 +206,12 @@ class GarminBolus(
      * What the watch needs to build its menu and to know when a bolus is done. Not behind the bolus
      * setting: it changes nothing, and the stop screen needs it like stop itself.
      */
-    fun status(ttActive: Boolean): CharSequence = JsonObject().apply {
+    fun status(ttActive: Boolean): JsonObject = JsonObject().apply {
         addProperty("ok", true)
         addProperty("bolusRunning", commandQueue.bolusInQueue() || commandQueue.isRunning(Command.CommandType.BOLUS))
         addProperty("ttActive", ttActive)
         addProperty("qwCount", watchButtons().size)
-    }.toString()
+    }
 
     private fun watchButtons() = quickWizard.list().filter { it.forDevice(QuickWizardEntry.DEVICE_WATCH) && inTimeWindow(it) }
 

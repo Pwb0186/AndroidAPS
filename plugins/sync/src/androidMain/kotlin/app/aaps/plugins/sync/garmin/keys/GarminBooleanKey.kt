@@ -17,6 +17,8 @@ enum class GarminBooleanKey(
     TempTargetFromWatch("garmin_tt_from_watch", false, title = SyncStrings.garmin_tt_from_watch),
     // Off by default: lets a watch app give a bolus (wizard, Quick Wizard; see GarminBolus).
     BolusFromWatch("garmin_bolus_from_watch", false, title = SyncStrings.garmin_bolus_from_watch),
+    // Off by default: lets a watch app start and end a scene (see GarminScene).
+    SceneFromWatch("garmin_scene_from_watch", false, title = SyncStrings.garmin_scene_from_watch),
     ;
 
 }

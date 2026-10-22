@@ -180,6 +180,7 @@
     <string name="garmin_request_key">Request Key</string>
     <string name="garmin_tt_from_watch">Temp target from Garmin watch</string>
     <string name="garmin_bolus_from_watch">Bolus from Garmin watch</string>
+    <string name="garmin_scene_from_watch">Scenes from Garmin watch</string>
 
     <!-- SMS Communicator & OTP Authenticator -->
 
