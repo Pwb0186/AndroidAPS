@@ -95,9 +95,17 @@ class GarminScene(
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
             ?: return error("Not prepared or already used")
         if (now() - p.atMs > PREPARED_TTL_MS) return error("Expired, choose again")
-        val progress = runBlocking { sceneActions.commitStart(id) }
+        val progress = try {
+            runBlocking { sceneActions.commitStart(id) }
+        } catch (e: Exception) {
+            // The scene may have started before it failed.
+            aapsLogger.error(LTag.GARMIN, "scene id $id commit failed", e)
+            return unknown()
+        }
         aapsLogger.info(LTag.GARMIN, "scene id $id committed: $progress")
-        if (progress !is ActionProgress.Applied) return error(failure(progress))
+        // Only a refusal proves that nothing was started.
+        if (progress is ActionProgress.Rejected) return error(failure(progress))
+        if (progress !is ActionProgress.Applied) return unknown()
         return ok("OK")
     }
 
@@ -132,6 +140,16 @@ class GarminScene(
         addProperty("ok", true)
         addProperty("text", text)
     }.toString()
+
+    /** The watch must not send it again blindly: it may have been done. */
+    private fun unknown(): CharSequence {
+        aapsLogger.warn(LTag.GARMIN, "scene outcome unknown")
+        return JsonObject().apply {
+            addProperty("ok", false)
+            addProperty("error", "Unknown - check AAPS")
+            addProperty("unknown", true)
+        }.toString()
+    }
 
     private fun error(text: String): CharSequence {
         aapsLogger.warn(LTag.GARMIN, "scene refused: $text")

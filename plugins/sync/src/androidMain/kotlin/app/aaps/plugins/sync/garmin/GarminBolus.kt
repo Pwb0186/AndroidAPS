@@ -8,11 +8,11 @@ import app.aaps.core.interfaces.bolus.BatchExecutor
 import app.aaps.core.interfaces.bolus.WizardBolusExecutor
 import app.aaps.core.interfaces.bolus.WizardExecutor
 import app.aaps.core.interfaces.clientcontrol.ActionProgress
+import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
@@ -67,14 +67,23 @@ class GarminBolus(
     private val profileFunction: ProfileFunction,
     private val persistenceLayer: PersistenceLayer,
     private val commandQueue: CommandQueue,
-    private val activePlugin: ActivePlugin,
+    private val config: Config,
 ) {
 
     companion object {
 
-        /** How long a prepared dose can be given. The watch closes its confirmation sooner. */
+        /**
+         * How long a prepared dose can be given. Shorter than for a temp target or a scene (120 s),
+         * because the dose was computed from BG, IOB and COB at that moment. The watch closes its
+         * confirmation sooner.
+         */
         @VisibleForTesting
         const val PREPARED_TTL_MS = 60_000L
+
+        /** More than any meal; keeps the carb split below from overflowing before AAPS' own limit. */
+        private const val MAX_CARBS_FROM_WATCH = 1000
+
+        private const val UNKNOWN = "Unknown - do NOT repeat, check AAPS"
     }
 
     /**
@@ -102,7 +111,9 @@ class GarminBolus(
 
     fun prepareWizard(uri: URI): CharSequence {
         refusal()?.let { return error(it) }
+        busy()?.let { return error(it) }
         val carbs = uri.queryParameter("carbs")?.toIntOrNull()?.takeIf { it >= 0 } ?: return error("Missing carbs")
+        if (carbs > MAX_CARBS_FROM_WATCH) return error("Too many carbs")
         val meal = MealType.entries.firstOrNull { it.param == (uri.queryParameter("type") ?: "bread") }
             ?: return error("Unknown meal type")
         val bg = iobCobCalculator.ads.actualBg() ?: return error(rh.gs(CoreUiStrings.wizard_no_actual_bg))
@@ -149,16 +160,18 @@ class GarminBolus(
 
     fun prepareQuickWizard(uri: URI): CharSequence {
         refusal()?.let { return error(it) }
+        busy()?.let { return error(it) }
         val guid = uri.queryParameter("guid") ?: return error("Missing guid")
         val entry = quickWizard.get(guid)
         if (entry == null || !entry.forDevice(QuickWizardEntry.DEVICE_WATCH) || !inTimeWindow(entry))
             return error("Quick Wizard not available now")
+        if (coolingDown(entry)) return error("Quick Wizard button used less than 30 min ago")
         // Like the phone and the Wear watch: a fixed insulin or carbs button is given as it is, a
         // wizard button is computed again by AAPS.
         val progress = runBlocking {
             when (entry.mode()) {
                 QuickWizardMode.INSULIN -> batchExecutor.prepare(listOf(fixed(entry, insulin = entry.insulin(), carbs = 0)), Sources.Garmin, treatmentLabel())
-                QuickWizardMode.CARBS   -> batchExecutor.prepare(listOf(fixed(entry, insulin = 0.0, carbs = entry.carbs())), Sources.Garmin, treatmentLabel())
+                QuickWizardMode.CARBS   -> batchExecutor.prepare(listOf(fixedCarbs(entry)), Sources.Garmin, treatmentLabel())
                 else                    -> wizardExecutor.prepare(WizardExecutor.WizardSource.QuickWizard(guid), wizardLabel())
             }
         }
@@ -173,15 +186,28 @@ class GarminBolus(
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
             ?: return error("Not prepared or already used")
         if (now() - p.atMs > PREPARED_TTL_MS) return error("Expired, choose again")
-        // A bolus given after the dose was computed (from the phone or another watch) is not in it.
-        val newest = runBlocking { persistenceLayer.getNewestBolusOfType(BS.Type.NORMAL) }
-        if (newest != null && newest.timestamp > p.atMs) return error("Another bolus was given, choose again")
-        val progress = runBlocking {
-            if (p.byWizard) wizardExecutor.commit(id, asAdvisor = false, Sources.Garmin, wizardLabel())
-            else batchExecutor.commit(id, Sources.Garmin, treatmentLabel())
+        // A bolus still waiting or running (also an SMB) is not in the computed dose yet.
+        busy()?.let { return error(it) }
+        // A bolus given after the dose was computed (from the phone, another watch or an SMB) is not in it.
+        val newest = runBlocking {
+            listOfNotNull(persistenceLayer.getNewestBolusOfType(BS.Type.NORMAL), persistenceLayer.getNewestBolusOfType(BS.Type.SMB))
+                .maxOfOrNull { it.timestamp }
+        }
+        if (newest != null && newest > p.atMs) return error("Another bolus was given, choose again")
+        val progress = try {
+            runBlocking {
+                if (p.byWizard) wizardExecutor.commit(id, asAdvisor = false, Sources.Garmin, wizardLabel())
+                else batchExecutor.commit(id, Sources.Garmin, treatmentLabel())
+            }
+        } catch (e: Exception) {
+            // The commit may have reached the pump before it failed.
+            aapsLogger.error(LTag.GARMIN, "bolus id $id commit failed", e)
+            return unknown()
         }
         aapsLogger.info(LTag.GARMIN, "bolus id $id committed: $progress")
-        if (progress !is ActionProgress.Applied) return error(failure(progress))
+        // Only a refusal proves that nothing was given; anything else may hide a given dose.
+        if (progress is ActionProgress.Rejected) return error(failure(progress))
+        if (progress !is ActionProgress.Applied) return unknown()
         return JsonObject().apply {
             addProperty("ok", true)
             addProperty("text", "OK")
@@ -190,11 +216,11 @@ class GarminBolus(
 
     /** Stops a bolus that is queued or running. Only the key is needed: stopping is a safety action. */
     fun stop(uri: URI): CharSequence {
-        // A bolus still in the AAPS queue has not reached the pump yet, so stopping the pump alone
-        // would let it start a moment later. Both are done.
-        val running = commandQueue.bolusInQueue() || commandQueue.isRunning(Command.CommandType.BOLUS)
+        // On AAPSClient the bolus runs on the master, which this queue cannot stop.
+        if (config.AAPSCLIENT) return error("Not on AAPSClient")
+        val running = bolusRunning()
+        // Clears the queued boluses and stops the pump (off this thread), like the stop button in AAPS.
         commandQueue.cancelAllBoluses(null)
-        activePlugin.activePump.stopBolusDelivering()
         aapsLogger.info(LTag.GARMIN, "stop bolus from the watch, bolus was running: $running")
         return JsonObject().apply {
             addProperty("ok", true)
@@ -208,12 +234,27 @@ class GarminBolus(
      */
     fun status(ttActive: Boolean): JsonObject = JsonObject().apply {
         addProperty("ok", true)
-        addProperty("bolusRunning", commandQueue.bolusInQueue() || commandQueue.isRunning(Command.CommandType.BOLUS))
+        addProperty("bolusRunning", bolusRunning())
         addProperty("ttActive", ttActive)
         addProperty("qwCount", watchButtons().size)
     }
 
-    private fun watchButtons() = quickWizard.list().filter { it.forDevice(QuickWizardEntry.DEVICE_WATCH) && inTimeWindow(it) }
+    private fun watchButtons() =
+        quickWizard.list().filter { it.forDevice(QuickWizardEntry.DEVICE_WATCH) && inTimeWindow(it) && !coolingDown(it) }
+
+    private fun bolusRunning() = commandQueue.bolusInQueue() || commandQueue.isRunning(Command.CommandType.BOLUS)
+
+    private fun busy(): String? = if (bolusRunning()) "A bolus is running, wait" else null
+
+    /**
+     * Same rule as the phone (QuickWizardEntry.isActive): a button for a short time window (a meal) is
+     * not offered again for 30 min after it was used, so the same meal is not given twice.
+     */
+    private fun coolingDown(entry: QuickWizardEntry): Boolean {
+        val windowSec = if (entry.validTo() >= entry.validFrom()) entry.validTo() - entry.validFrom()
+        else 86400 - entry.validFrom() + entry.validTo()
+        return windowSec < 4 * 3600 && now() - entry.lastUsed() <= QuickWizardEntry.COOLDOWN_MILLIS
+    }
 
     private fun park(progress: ActionProgress, byWizard: Boolean, what: String): CharSequence {
         if (progress !is ActionProgress.Prepared) return error(failure(progress))
@@ -226,6 +267,16 @@ class GarminBolus(
             addProperty("id", progress.id.toString())
             add("lines", lines)
         }.toString()
+    }
+
+    /** A carbs button with its extra eCarbs, as the phone and the Wear watch give it. */
+    private fun fixedCarbs(entry: QuickWizardEntry): BatchAction.Bolus {
+        val eCarbs = entry.useEcarbs() == QuickWizardEntry.ALWAYS
+        return fixed(entry, insulin = 0.0, carbs = entry.carbs()).copy(
+            eCarbsGrams = if (eCarbs) entry.carbs2() else 0,
+            eCarbsDelayMinutes = if (eCarbs) entry.time() else 0,
+            eCarbsDurationHours = if (eCarbs) entry.duration() else 0
+        )
     }
 
     private fun fixed(entry: QuickWizardEntry, insulin: Double, carbs: Int) = BatchAction.Bolus(
@@ -244,14 +295,28 @@ class GarminBolus(
     private fun wizardLabel() = rh.gs(CoreUiStrings.boluswizard)
     private fun treatmentLabel() = rh.gs(CoreUiStrings.overview_treatment_label)
 
-    private fun refusal(): String? =
-        if (!preferences.get(GarminBooleanKey.BolusFromWatch)) "Bolus from Garmin is off in AAPS" else null
+    private fun refusal(): String? = when {
+        !preferences.get(GarminBooleanKey.BolusFromWatch) -> "Bolus from Garmin is off in AAPS"
+        // On AAPSClient the bolus would run on the master, but stop and status only see this phone.
+        config.AAPSCLIENT                                 -> "Not on AAPSClient"
+        else                                              -> null
+    }
 
     private fun failure(progress: ActionProgress): String = when (progress) {
         // The dose may or may not be given: say so, so it is not given again blindly.
-        is ActionProgress.Unconfirmed -> "Unknown - do NOT repeat, check AAPS"
+        is ActionProgress.Unconfirmed -> UNKNOWN
         is ActionProgress.Rejected    -> progress.detail ?: rh.gs(progress.reason.failText())
         else                          -> "Error"
+    }
+
+    /** The watch must not offer the same dose again: it may have been given. */
+    private fun unknown(): CharSequence {
+        aapsLogger.warn(LTag.GARMIN, "bolus outcome unknown")
+        return JsonObject().apply {
+            addProperty("ok", false)
+            addProperty("error", UNKNOWN)
+            addProperty("unknown", true)
+        }.toString()
     }
 
     private fun error(text: String): CharSequence {

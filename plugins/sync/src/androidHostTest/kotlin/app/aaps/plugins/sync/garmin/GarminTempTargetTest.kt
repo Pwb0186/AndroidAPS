@@ -63,14 +63,14 @@ class GarminTempTargetTest : TestBaseWithProfile() {
     ).asJsonObject
 
     private fun prepareActivity(): String {
-        val jo = get("/tt/prepare?preset=activity&key=secret")
+        val jo = get("/tt/prepare?preset=activity")
         assertTrue(jo["ok"].asBoolean)
         return jo["id"].asString
     }
 
     @Test
     fun prepare_returnsIdAsTextAndAapsLines() {
-        val jo = get("/tt/prepare?preset=activity&key=secret")
+        val jo = get("/tt/prepare?preset=activity")
         assertTrue(jo["ok"].asBoolean)
         assertEquals(preparedId.toString(), jo["id"].asString)
         assertEquals("Activity 8.0 mmol/l 60 min", jo["lines"].asJsonArray[0].asString)
@@ -85,7 +85,7 @@ class GarminTempTargetTest : TestBaseWithProfile() {
     @Test
     fun prepare_cancel_isTempTargetWithDurationZero() {
         activeTt = mock()
-        get("/tt/prepare?preset=cancel&key=secret")
+        get("/tt/prepare?preset=cancel")
         val captor = argumentCaptor<List<BatchAction>>()
         runBlocking { verify(batchExecutor).prepare(captor.capture(), any(), any()) }
         assertEquals(0, (captor.firstValue.single() as BatchAction.TempTarget).durationMinutes)
@@ -93,7 +93,7 @@ class GarminTempTargetTest : TestBaseWithProfile() {
 
     @Test
     fun prepare_cancel_noRunningTempTarget_refused() {
-        val jo = get("/tt/prepare?preset=cancel&key=secret")
+        val jo = get("/tt/prepare?preset=cancel")
         assertFalse(jo["ok"].asBoolean)
         assertEquals("No temp target running", jo["error"].asString)
         runBlocking { verify(batchExecutor, never()).prepare(any(), any(), any()) }
@@ -101,7 +101,7 @@ class GarminTempTargetTest : TestBaseWithProfile() {
 
     @Test
     fun prepare_unknownPreset_refused() {
-        val jo = get("/tt/prepare?preset=foo&key=secret")
+        val jo = get("/tt/prepare?preset=foo")
         assertFalse(jo["ok"].asBoolean)
         runBlocking { verify(batchExecutor, never()).prepare(any(), any(), any()) }
     }
@@ -120,22 +120,22 @@ class GarminTempTargetTest : TestBaseWithProfile() {
     @Test
     fun commit_appliesOnce() {
         val id = prepareActivity()
-        assertTrue(get("/tt/commit?id=$id&key=secret")["ok"].asBoolean)
-        assertFalse(get("/tt/commit?id=$id&key=secret")["ok"].asBoolean)
+        assertTrue(get("/tt/commit?id=$id")["ok"].asBoolean)
+        assertFalse(get("/tt/commit?id=$id")["ok"].asBoolean)
         runBlocking { verify(batchExecutor, times(1)).commit(eq(preparedId), eq(Sources.Garmin), any(), any()) }
     }
 
     @Test
     fun commit_wrongOrMissingId_refused() {
         prepareActivity()
-        assertFalse(get("/tt/commit?id=123&key=secret")["ok"].asBoolean)
+        assertFalse(get("/tt/commit?id=123")["ok"].asBoolean)
         assertFalse(get("/tt/commit?key=secret")["ok"].asBoolean)
         runBlocking { verify(batchExecutor, never()).commit(any(), any(), any(), any()) }
     }
 
     @Test
     fun commit_withoutPrepare_refused() {
-        assertFalse(get("/tt/commit?id=$preparedId&key=secret")["ok"].asBoolean)
+        assertFalse(get("/tt/commit?id=$preparedId")["ok"].asBoolean)
         runBlocking { verify(batchExecutor, never()).commit(any(), any(), any(), any()) }
     }
 
@@ -143,7 +143,7 @@ class GarminTempTargetTest : TestBaseWithProfile() {
     fun commit_afterTimeLimit_refused() {
         val id = prepareActivity()
         nowMs += GarminTempTarget.PREPARED_TTL_MS + 1
-        assertFalse(get("/tt/commit?id=$id&key=secret")["ok"].asBoolean)
+        assertFalse(get("/tt/commit?id=$id")["ok"].asBoolean)
         runBlocking { verify(batchExecutor, never()).commit(any(), any(), any(), any()) }
     }
 
@@ -151,7 +151,7 @@ class GarminTempTargetTest : TestBaseWithProfile() {
     fun commit_atTimeLimit_applied() {
         val id = prepareActivity()
         nowMs += GarminTempTarget.PREPARED_TTL_MS
-        assertTrue(get("/tt/commit?id=$id&key=secret")["ok"].asBoolean)
+        assertTrue(get("/tt/commit?id=$id")["ok"].asBoolean)
     }
 
     @Test
@@ -160,8 +160,8 @@ class GarminTempTargetTest : TestBaseWithProfile() {
         runBlocking {
             whenever(batchExecutor.prepare(any(), any(), any())).thenReturn(ActionProgress.Prepared(preparedId + 1))
         }
-        get("/tt/prepare?preset=hypo&key=secret")
-        assertFalse(get("/tt/commit?id=$first&key=secret")["ok"].asBoolean)
+        get("/tt/prepare?preset=hypo")
+        assertFalse(get("/tt/commit?id=$first")["ok"].asBoolean)
         runBlocking { verify(batchExecutor, never()).commit(any(), any(), any(), any()) }
     }
 
@@ -170,7 +170,7 @@ class GarminTempTargetTest : TestBaseWithProfile() {
         runBlocking {
             whenever(batchExecutor.prepare(any(), any(), any())).thenReturn(ActionProgress.Rejected(FailureReason.ExecutionFailed, "Target out of range"))
         }
-        val jo = get("/tt/prepare?preset=activity&key=secret")
+        val jo = get("/tt/prepare?preset=activity")
         assertFalse(jo["ok"].asBoolean)
         assertEquals("Target out of range", jo["error"].asString)
     }
@@ -181,8 +181,27 @@ class GarminTempTargetTest : TestBaseWithProfile() {
             whenever(batchExecutor.commit(any(), any(), any(), any())).thenReturn(ActionProgress.Unconfirmed(FailureReason.NoReply))
         }
         val id = prepareActivity()
-        val jo = get("/tt/commit?id=$id&key=secret")
+        val jo = get("/tt/commit?id=$id")
         assertFalse(jo["ok"].asBoolean)
         assertEquals("Unknown - check AAPS", jo["error"].asString)
+        assertTrue(jo["unknown"].asBoolean)
+    }
+
+    @Test
+    fun commitException_isUnknown() {
+        runBlocking { whenever(batchExecutor.commit(any(), any(), any(), any())).thenThrow(IllegalStateException("db")) }
+        val id = prepareActivity()
+        val jo = get("/tt/commit?id=$id")
+        assertFalse(jo["ok"].asBoolean)
+        assertTrue(jo["unknown"].asBoolean)
+    }
+
+    @Test
+    fun commitRejected_isPlainRefusal() {
+        runBlocking { whenever(batchExecutor.commit(any(), any(), any(), any())).thenReturn(ActionProgress.Rejected(FailureReason.ExecutionFailed, "Not allowed")) }
+        val id = prepareActivity()
+        val jo = get("/tt/commit?id=$id")
+        assertEquals("Not allowed", jo["error"].asString)
+        assertFalse(jo.has("unknown"))
     }
 }

@@ -88,9 +88,17 @@ class GarminTempTarget(
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
             ?: return error("Not prepared or already used")
         if (now() - p.atMs > PREPARED_TTL_MS) return error("Expired, choose again")
-        val progress = runBlocking { batchExecutor.commit(id, Sources.Garmin, label()) }
+        val progress = try {
+            runBlocking { batchExecutor.commit(id, Sources.Garmin, label()) }
+        } catch (e: Exception) {
+            // The temp target may have been set before it failed.
+            aapsLogger.error(LTag.GARMIN, "temp target id $id commit failed", e)
+            return unknown()
+        }
         aapsLogger.info(LTag.GARMIN, "temp target id $id committed: $progress")
-        if (progress !is ActionProgress.Applied) return error(failure(progress))
+        // Only a refusal proves that nothing was set.
+        if (progress is ActionProgress.Rejected) return error(failure(progress))
+        if (progress !is ActionProgress.Applied) return unknown()
         return JsonObject().apply {
             addProperty("ok", true)
             addProperty("text", "OK")
@@ -114,6 +122,16 @@ class GarminTempTarget(
         is ActionProgress.Unconfirmed -> "Unknown - check AAPS"
         is ActionProgress.Rejected    -> progress.detail ?: rh.gs(progress.reason.failText())
         else                          -> "Error"
+    }
+
+    /** The watch must not send it again blindly: it may have been done. */
+    private fun unknown(): CharSequence {
+        aapsLogger.warn(LTag.GARMIN, "temp target outcome unknown")
+        return JsonObject().apply {
+            addProperty("ok", false)
+            addProperty("error", "Unknown - check AAPS")
+            addProperty("unknown", true)
+        }.toString()
     }
 
     private fun error(text: String): CharSequence {

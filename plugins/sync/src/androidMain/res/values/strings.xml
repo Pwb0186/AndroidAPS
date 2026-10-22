@@ -177,6 +177,7 @@
 
     <string name="wear_action_running_mode_title">Running mode</string>
 
+    <string name="garmin_command_key">Command key for Garmin watch (at least 8 characters)</string>
     <string name="garmin_request_key">Request Key</string>
     <string name="garmin_tt_from_watch">Temp target from Garmin watch</string>
     <string name="garmin_bolus_from_watch">Bolus from Garmin watch</string>

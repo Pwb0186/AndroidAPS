@@ -69,8 +69,7 @@ class GarminPluginTest : TestBaseWithProfile() {
         }
         doAnswer { i -> spStore[i.getArgument(0)] = i.getArgument<String>(1); null }
             .whenever(garminSp).putString(any<String>(), any<String>())
-        // rxBus and notificationManager: not used by the code under test.
-        gp = GarminPlugin(aapsLogger, rh, preferences, garminSp, context, loopHub, persistenceLayer, mock(), mock(), mock(), mock())
+        gp = GarminPlugin(aapsLogger, rh, preferences, garminSp, context, loopHub, persistenceLayer, notificationManager, mock(), mock(), mock())
         gp.clock = clock
         whenever(loopHub.currentProfileName).thenReturn("Default")
         whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28890)
@@ -79,6 +78,7 @@ class GarminPluginTest : TestBaseWithProfile() {
         whenever(preferences.get(any<StringNonKey>())).thenAnswer { i -> "" }
         // Not covered by the StringNonKey stub above; the plugin never gets null in real use.
         whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("")
     }
 
     @AfterEach
@@ -243,8 +243,8 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @Test
     fun requestHandler_KeyRequiredAndProvided() {
-        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("foo")
-        val uri = createUri(mapOf("key" to "foo"))
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("commandkey")
+        val uri = createUri(mapOf("key" to "commandkey"))
         val handler = gp.requestHandler({ u: URI -> assertEquals(uri, u); "OK" }, keyRequired = true)
         assertEquals(
             HttpURLConnection.HTTP_OK to "OK",
@@ -254,7 +254,7 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @Test
     fun requestHandler_KeyRequired_WrongOrMissingKey() {
-        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("foo")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("commandkey")
         val handler = gp.requestHandler({ "OK" }, keyRequired = true)
         assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(emptyMap()), null))
         assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(mapOf("key" to "bar")), null))
@@ -262,9 +262,44 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @Test
     fun requestHandler_KeyRequired_NoKeySet_Refused() {
-        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("")
         val handler = gp.requestHandler({ "OK" }, keyRequired = true)
         assertEquals(HttpURLConnection.HTTP_FORBIDDEN to "{}", handler(mock<SocketAddress>(), createUri(emptyMap()), null))
+    }
+
+    @Test
+    fun requestHandler_KeyRequired_ShortCommandKey_Refused() {
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("1234567")
+        val handler = gp.requestHandler({ "OK" }, keyRequired = true)
+        assertEquals(HttpURLConnection.HTTP_FORBIDDEN to "{}", handler(mock<SocketAddress>(), createUri(mapOf("key" to "1234567")), null))
+    }
+
+    @Test
+    fun requestHandler_KeyRequired_AapsKeyDoesNotOpenCommands() {
+        // The AAPS key is pushed to every watch app, so it must never work for commands.
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("aapskey123")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("commandkey")
+        val handler = gp.requestHandler({ "OK" }, keyRequired = true)
+        assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(mapOf("key" to "aapskey123")), null))
+    }
+
+    @Test
+    fun requestHandler_WrongKeys_LockAllCommands_ButStop() {
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("commandkey")
+        val command = gp.requestHandler({ "OK" }, keyRequired = true)
+        val stop = gp.requestHandler({ "STOP" }, keyRequired = true, allowWhileLocked = true)
+        val wrong = createUri(mapOf("key" to "guess"))
+        val right = createUri(mapOf("key" to "commandkey"))
+        repeat(GarminKeyGuard.MAX_FAILURES - 1) {
+            assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", command(mock<SocketAddress>(), wrong, null))
+        }
+        assertEquals(GarminPlugin.HTTP_TOO_MANY_REQUESTS to "{}", command(mock<SocketAddress>(), wrong, null))
+        // Locked: also the right key is refused, but stop still works with it.
+        assertEquals(GarminPlugin.HTTP_TOO_MANY_REQUESTS to "{}", command(mock<SocketAddress>(), right, null))
+        assertEquals(HttpURLConnection.HTTP_OK to "STOP", stop(mock<SocketAddress>(), right, null))
+        assertEquals(GarminPlugin.HTTP_TOO_MANY_REQUESTS to "{}", stop(mock<SocketAddress>(), wrong, null))
+        gp.clock = Clock.offset(clock, Duration.ofMillis(GarminKeyGuard.LOCKOUT_MS + 1))
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", command(mock<SocketAddress>(), right, null))
     }
 
     @Test
@@ -278,12 +313,19 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @Test
     fun setupHttpServer_CommandsNeedKey(): Unit = runBlocking {
-        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("")
+        // Only the AAPS key is set and sent: every command must still be refused.
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("aapskey123")
         whenever(preferences.get(GarminBooleanKey.LocalHttpServer)).thenReturn(true)
         whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28894)
         gp.setupHttpServer(Duration.ofSeconds(10))
-        for (path in listOf("/carbs?carbs=10", "/connect?disconnectMinutes=30", "/tt/prepare?preset=activity", "/tt/commit?id=1")) {
-            val resp = URI("http://127.0.0.1:28894$path").toURL().openConnection() as HttpURLConnection
+        val commands = listOf(
+            "/carbs?carbs=10", "/connect?disconnectMinutes=30", "/tt/prepare?preset=activity", "/tt/commit?id=1",
+            "/wizard/prepare?carbs=10", "/qw/list", "/qw/prepare?guid=a", "/bolus/commit?id=1", "/bolus/stop",
+            "/scene/list", "/scene/prepare?id=a", "/scene/commit?id=1", "/scene/stop", "/status"
+        )
+        for (path in commands) {
+            val sep = if (path.contains('?')) '&' else '?'
+            val resp = URI("http://127.0.0.1:28894$path${sep}key=aapskey123").toURL().openConnection() as HttpURLConnection
             assertEquals(HttpURLConnection.HTTP_FORBIDDEN, resp.responseCode, path)
         }
         gp.onStop()
@@ -508,16 +550,16 @@ class GarminPluginTest : TestBaseWithProfile() {
     fun requestHandler_KeyWithPlus() {
         // A "+" in the key reaches AAPS as %2B and must be decoded once. Decoding
         // uri.query (already decoded) a second time turned it into a space (401).
-        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("a+b")
-        val uri = URI("http://foo?key=a%2Bb")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("a+bcdefgh")
+        val uri = URI("http://foo?key=a%2Bbcdefgh")
         val handler = gp.requestHandler({ "OK" }, keyRequired = true)
         assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
     }
 
     @Test
     fun requestHandler_KeyWithPercent() {
-        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("100%")
-        val uri = URI("http://foo?key=100%25")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("100%abcde")
+        val uri = URI("http://foo?key=100%25abcde")
         val handler = gp.requestHandler({ "OK" }, keyRequired = true)
         assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
     }

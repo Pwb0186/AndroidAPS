@@ -13,9 +13,7 @@ import app.aaps.core.interfaces.bolus.WizardExecutor
 import app.aaps.core.interfaces.clientcontrol.ActionProgress
 import app.aaps.core.interfaces.clientcontrol.FailureReason
 import app.aaps.core.interfaces.db.PersistenceLayer
-import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.ProfileFunction
-import app.aaps.core.interfaces.pump.PumpWithConcentration
 import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.keys.BooleanKey
@@ -56,18 +54,16 @@ class GarminBolusTest : TestBaseWithProfile() {
     @Mock private lateinit var garminProfileFunction: ProfileFunction
     @Mock private lateinit var garminPersistenceLayer: PersistenceLayer
     @Mock private lateinit var garminCommandQueue: CommandQueue
-    @Mock private lateinit var garminActivePlugin: ActivePlugin
-    @Mock private lateinit var pump: PumpWithConcentration
 
     private lateinit var bolus: GarminBolus
-    private var nowMs = 1_000_000L
+    private var nowMs = 100_000_000L
     private val preparedId = 1_792_500_000_456L
 
     @BeforeEach
     fun setup() {
         bolus = GarminBolus(
             aapsLogger, preferences, rh, wizardExecutor, batchExecutor, quickWizard, iobCobCalculator,
-            garminProfileFunction, garminPersistenceLayer, garminCommandQueue, garminActivePlugin
+            garminProfileFunction, garminPersistenceLayer, garminCommandQueue, config
         )
         bolus.now = { nowMs }
         bolus.secondsFromMidnight = { 12 * 3600 }
@@ -77,7 +73,6 @@ class GarminBolusTest : TestBaseWithProfile() {
         whenever(iobCobCalculator.ads).thenReturn(ads)
         whenever(ads.actualBg()).thenReturn(InMemoryGlucoseValue(timestamp = nowMs, value = 120.0))
         whenever(garminProfileFunction.getUnits()).thenReturn(GlucoseUnit.MGDL)
-        whenever(garminActivePlugin.activePump).thenReturn(pump)
         // doReturn: calling rh.gs() inside whenever() would hit the test base's strict text answer.
         doReturn("Bolus wizard").whenever(rh).gs(CoreUiStrings.boluswizard)
         doReturn("Treatment").whenever(rh).gs(CoreUiStrings.overview_treatment_label)
@@ -94,7 +89,9 @@ class GarminBolusTest : TestBaseWithProfile() {
     private fun json(s: CharSequence): JsonObject = JsonParser.parseString(s.toString()).asJsonObject
     private fun uri(q: String) = URI("http://foo/x?$q")
 
-    private fun qwEntry(guid: String, mode: QuickWizardMode, device: Int = QuickWizardEntry.DEVICE_WATCH, from: Int = 0, to: Int = 86399): QuickWizardEntry =
+    private fun qwEntry(
+        guid: String, mode: QuickWizardMode, device: Int = QuickWizardEntry.DEVICE_WATCH, from: Int = 0, to: Int = 86399, lastUsed: Long = 0L
+    ): QuickWizardEntry =
         mock<QuickWizardEntry>().also {
             whenever(it.guid()).thenReturn(guid)
             whenever(it.buttonText()).thenReturn("Btn $guid")
@@ -104,6 +101,7 @@ class GarminBolusTest : TestBaseWithProfile() {
             whenever(it.validTo()).thenReturn(to)
             whenever(it.insulin()).thenReturn(1.5)
             whenever(it.carbs()).thenReturn(30)
+            whenever(it.lastUsed()).thenReturn(lastUsed)
             whenever(quickWizard.get(guid)).thenReturn(it)
         }
 
@@ -190,7 +188,61 @@ class GarminBolusTest : TestBaseWithProfile() {
             whenever(wizardExecutor.commit(any(), any(), any(), any(), any())).thenReturn(ActionProgress.Unconfirmed(FailureReason.NoReply))
         }
         bolus.prepareWizard(uri("carbs=40"))
-        assertEquals("Unknown - do NOT repeat, check AAPS", json(bolus.commit(uri("id=$preparedId")))["error"].asString)
+        val jo = json(bolus.commit(uri("id=$preparedId")))
+        assertEquals("Unknown - do NOT repeat, check AAPS", jo["error"].asString)
+        assertTrue(jo["unknown"].asBoolean)
+    }
+
+    @Test
+    fun commit_exception_isUnknownNotRefused() {
+        runBlocking { whenever(wizardExecutor.commit(any(), any(), any(), any(), any())).thenThrow(IllegalStateException("pump")) }
+        bolus.prepareWizard(uri("carbs=40"))
+        val jo = json(bolus.commit(uri("id=$preparedId")))
+        assertFalse(jo["ok"].asBoolean)
+        assertTrue(jo["unknown"].asBoolean)
+    }
+
+    @Test
+    fun commit_rejected_isPlainRefusal() {
+        runBlocking { whenever(wizardExecutor.commit(any(), any(), any(), any(), any())).thenReturn(ActionProgress.Rejected(FailureReason.ExecutionFailed, "Pump busy")) }
+        bolus.prepareWizard(uri("carbs=40"))
+        val jo = json(bolus.commit(uri("id=$preparedId")))
+        assertEquals("Pump busy", jo["error"].asString)
+        assertFalse(jo.has("unknown"))
+    }
+
+    @Test
+    fun bolusRunningOrQueued_prepareAndCommitRefused() {
+        bolus.prepareWizard(uri("carbs=40"))
+        whenever(garminCommandQueue.bolusInQueue()).thenReturn(true)
+        assertEquals("A bolus is running, wait", json(bolus.commit(uri("id=$preparedId")))["error"].asString)
+        assertEquals("A bolus is running, wait", json(bolus.prepareWizard(uri("carbs=40")))["error"].asString)
+        qwEntry("i", QuickWizardMode.INSULIN)
+        assertEquals("A bolus is running, wait", json(bolus.prepareQuickWizard(uri("guid=i")))["error"].asString)
+        runBlocking { verify(wizardExecutor, never()).commit(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun commit_smbSincePrepare_refused() {
+        bolus.prepareWizard(uri("carbs=40"))
+        val smb = mock<BS>()
+        whenever(smb.timestamp).thenReturn(nowMs + 1)
+        runBlocking { whenever(garminPersistenceLayer.getNewestBolusOfType(BS.Type.SMB)).thenReturn(smb) }
+        assertEquals("Another bolus was given, choose again", json(bolus.commit(uri("id=$preparedId")))["error"].asString)
+    }
+
+    @Test
+    fun wizard_tooManyCarbs_refused() {
+        assertEquals("Too many carbs", json(bolus.prepareWizard(uri("carbs=100000000")))["error"].asString)
+        runBlocking { verify(wizardExecutor, never()).prepare(any(), any()) }
+    }
+
+    @Test
+    fun aapsClient_refused() {
+        whenever(config.AAPSCLIENT).thenReturn(true)
+        assertEquals("Not on AAPSClient", json(bolus.prepareWizard(uri("carbs=40")))["error"].asString)
+        assertEquals("Not on AAPSClient", json(bolus.stop(uri("")))["error"].asString)
+        verify(garminCommandQueue, never()).cancelAllBoluses(anyOrNull())
     }
 
     @Test
@@ -244,6 +296,36 @@ class GarminBolusTest : TestBaseWithProfile() {
         val b = captor.firstValue.single() as BatchAction.Bolus
         assertEquals(0.0, b.insulin)
         assertEquals(30, b.carbs)
+        assertEquals(0, b.eCarbsGrams)
+    }
+
+    @Test
+    fun quickWizard_carbsButtonWithECarbs_givesThemLikeThePhone() {
+        val e = qwEntry("c", QuickWizardMode.CARBS)
+        whenever(e.useEcarbs()).thenReturn(QuickWizardEntry.ALWAYS)
+        whenever(e.carbs2()).thenReturn(25)
+        whenever(e.time()).thenReturn(60)
+        whenever(e.duration()).thenReturn(3)
+        bolus.prepareQuickWizard(uri("guid=c"))
+        val captor = argumentCaptor<List<BatchAction>>()
+        runBlocking { verify(batchExecutor).prepare(captor.capture(), any(), any()) }
+        val b = captor.firstValue.single() as BatchAction.Bolus
+        assertEquals(30, b.carbs)
+        assertEquals(25, b.eCarbsGrams)
+        assertEquals(60, b.eCarbsDelayMinutes)
+        assertEquals(3, b.eCarbsDurationHours)
+    }
+
+    @Test
+    fun quickWizard_shortWindowUsedRecently_hiddenAndRefused_longWindowNot() {
+        val meal = qwEntry("meal", QuickWizardMode.INSULIN, from = 11 * 3600, to = 13 * 3600, lastUsed = nowMs - 10 * 60 * 1000L)
+        val allDay = qwEntry("day", QuickWizardMode.INSULIN, lastUsed = nowMs - 10 * 60 * 1000L)
+        val oldMeal = qwEntry("old", QuickWizardMode.INSULIN, from = 11 * 3600, to = 13 * 3600, lastUsed = nowMs - 31 * 60 * 1000L)
+        whenever(quickWizard.list()).thenReturn(arrayListOf(meal, allDay, oldMeal))
+        val items = json(bolus.quickWizardList(uri("")))["items"].asJsonArray.map { it.asJsonObject["guid"].asString }
+        assertEquals(listOf("day", "old"), items)
+        assertEquals("Quick Wizard button used less than 30 min ago", json(bolus.prepareQuickWizard(uri("guid=meal")))["error"].asString)
+        assertTrue(json(bolus.prepareQuickWizard(uri("guid=old")))["ok"].asBoolean)
     }
 
     @Test
@@ -261,7 +343,6 @@ class GarminBolusTest : TestBaseWithProfile() {
         whenever(garminCommandQueue.bolusInQueue()).thenReturn(true)
         assertEquals("Bolus stopped", json(bolus.stop(uri("")))["text"].asString)
         verify(garminCommandQueue).cancelAllBoluses(anyOrNull())
-        verify(pump).stopBolusDelivering()
     }
 
     @Test
@@ -269,7 +350,7 @@ class GarminBolusTest : TestBaseWithProfile() {
         whenever(garminCommandQueue.bolusInQueue()).thenReturn(false)
         whenever(garminCommandQueue.isRunning(Command.CommandType.BOLUS)).thenReturn(false)
         assertEquals("No bolus running", json(bolus.stop(uri("")))["text"].asString)
-        verify(pump).stopBolusDelivering()
+        verify(garminCommandQueue).cancelAllBoluses(anyOrNull())
     }
 
     @Test

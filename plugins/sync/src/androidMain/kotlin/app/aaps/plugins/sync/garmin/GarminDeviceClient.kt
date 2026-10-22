@@ -231,6 +231,7 @@ class GarminDeviceClient(
                             Schedulers.io().scheduleDirect({ retryMessage(deviceId, appId) }, delaySec, TimeUnit.SECONDS)
                             return
                         }
+                        errorMessage = "gave up after $MAX_RETRIES attempts: $status"
                     }
 
                     else                                    -> {

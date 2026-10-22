@@ -124,6 +124,12 @@ class GarminPlugin(
         @VisibleForTesting
         fun maskKey(s: String) = KEY_IN_QUERY.replace(s, "key=***")
 
+        /** Commands blocked after wrong keys (not in HttpURLConnection). */
+        const val HTTP_TOO_MANY_REQUESTS = 429
+
+        /** Longest /get?wait=: a longer wait only holds a server thread. */
+        private const val MAX_WAIT_SEC = 120L
+
         // Database types whose changes trigger a push (debounced).
         // GV is not here: a new glucose value pushes at once in onNewBloodGlucose().
         private val PUSH_TRIGGER_TYPES: Set<KClass<*>> =
@@ -178,6 +184,16 @@ class GarminPlugin(
     private var lastGlucoseValueTimestamp: Long? = null
     private val glucoseUnitStr get() = if (loopHub.glucoseUnit == GlucoseUnit.MGDL) "mgdl" else "mmoll"
     private val garminAapsKey get() = preferences.get(GarminStringKey.RequestKey)
+
+    /**
+     * The key for commands. Unlike the AAPS key it is never sent to a watch: the AAPS key goes out
+     * with every push, to any watch app that has called the open /get.
+     */
+    private val garminCommandKey get() = preferences.get(GarminStringKey.CommandKey)
+
+    /** Wrong command keys, counted over all requests. See GarminKeyGuard.kt. */
+    @VisibleForTesting
+    val keyGuard = GarminKeyGuard { clock.millis() }
 
     private fun setupGarminMessenger() {
         val old: GarminMessenger?
@@ -287,7 +303,8 @@ class GarminPlugin(
                 registerEndpoint("/qw/list", requestHandler(garminBolus::quickWizardList, keyRequired = true))
                 registerEndpoint("/qw/prepare", requestHandler(garminBolus::prepareQuickWizard, keyRequired = true))
                 registerEndpoint("/bolus/commit", requestHandler(garminBolus::commit, keyRequired = true))
-                registerEndpoint("/bolus/stop", requestHandler(garminBolus::stop, keyRequired = true))
+                // Stop still works with the right key while wrong keys block the other commands.
+                registerEndpoint("/bolus/stop", requestHandler(garminBolus::stop, keyRequired = true, allowWhileLocked = true))
                 registerEndpoint("/scene/list", requestHandler(garminScene::list, keyRequired = true))
                 registerEndpoint("/scene/prepare", requestHandler(garminScene::prepare, keyRequired = true))
                 registerEndpoint("/scene/commit", requestHandler(garminScene::commit, keyRequired = true))
@@ -430,25 +447,40 @@ class GarminPlugin(
     }
 
     @VisibleForTesting
-    fun requestHandler(action: (URI) -> CharSequence, keyRequired: Boolean = false) = { caller: SocketAddress, uri: URI, _: String? ->
+    fun requestHandler(action: (URI) -> CharSequence, keyRequired: Boolean = false, allowWhileLocked: Boolean = false) = { caller: SocketAddress, uri: URI, _: String? ->
         // Reading (/get, /sgv.json) is open: any app on the phone could read the same values
         // elsewhere, and the watch faces and data fields then need no key. Everything that
-        // changes treatment (/carbs, /connect, temp target) needs the AAPS key, and is refused
-        // while no key is set, because any app on the phone can call localhost.
-        val key = garminAapsKey
-        val deviceKey = getQueryParameter(uri, "key")
-        if (keyRequired && key.isEmpty()) {
-            aapsLogger.warn(LTag.GARMIN, "No AAPS key set, refused ${uri.path} from $caller")
-            HttpURLConnection.HTTP_FORBIDDEN to "{}"
-        } else if (keyRequired && key != deviceKey) {
-            aapsLogger.warn(LTag.GARMIN, "Invalid AAPS Key from $caller for ${uri.path}")
-            // Slows down guessing the key.
-            Thread.sleep(1000L)
-            HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
-        } else {
-            aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}")
-            HttpURLConnection.HTTP_OK to action(uri).also {
-                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}, result: $it")
+        // changes treatment (/carbs, /connect, temp target, bolus, scenes) needs the command key,
+        // and is refused while it is not set, because any app on the phone can call localhost.
+        val check = if (keyRequired) keyGuard.check(garminCommandKey, getQueryParameter(uri, "key"), allowWhileLocked)
+        else GarminKeyGuard.Result.OK
+        when (check) {
+            GarminKeyGuard.Result.NO_KEY     -> {
+                aapsLogger.warn(LTag.GARMIN, "No command key set, refused ${uri.path} from $caller")
+                HttpURLConnection.HTTP_FORBIDDEN to "{}"
+            }
+
+            GarminKeyGuard.Result.WRONG      -> {
+                aapsLogger.warn(LTag.GARMIN, "Invalid command key from $caller for ${uri.path}")
+                HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
+            }
+
+            GarminKeyGuard.Result.LOCKED_NOW -> {
+                // Another app on the phone may be guessing the key; the watch shows "locked" from now on.
+                aapsLogger.warn(LTag.GARMIN, "${GarminKeyGuard.MAX_FAILURES} wrong command keys, commands blocked for 15 min")
+                HTTP_TOO_MANY_REQUESTS to "{}"
+            }
+
+            GarminKeyGuard.Result.LOCKED     -> {
+                aapsLogger.warn(LTag.GARMIN, "Commands blocked after wrong keys, refused ${uri.path} from $caller")
+                HTTP_TOO_MANY_REQUESTS to "{}"
+            }
+
+            GarminKeyGuard.Result.OK         -> {
+                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}")
+                HttpURLConnection.HTTP_OK to action(uri).also {
+                    aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}, result: $it")
+                }
             }
         }
     }
@@ -473,7 +505,7 @@ class GarminPlugin(
             }
         }
 
-        val waitSec = getQueryParameter(uri, "wait", 0L)
+        val waitSec = getQueryParameter(uri, "wait", 0L).coerceIn(0L, MAX_WAIT_SEC)
         val glucoseValues = getGlucoseValues(Duration.ofSeconds(waitSec))
         val jo = JsonObject()
         jo.addProperty("encodedGlucose", encodedGlucose(glucoseValues))
@@ -676,6 +708,7 @@ class GarminPlugin(
             GarminBooleanKey.LocalHttpServer,
             GarminIntKey.LocalHttpPort,
             GarminStringKey.RequestKey,
+            GarminStringKey.CommandKey,
             GarminBooleanKey.TempTargetFromWatch,
             GarminBooleanKey.BolusFromWatch,
             GarminBooleanKey.SceneFromWatch

@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.times
@@ -84,6 +85,17 @@ class GarminSceneTest : TestBaseWithProfile() {
         assertTrue(json(garminScene.commit(uri("id=$preparedId")))["ok"].asBoolean)
         assertFalse(json(garminScene.commit(uri("id=$preparedId")))["ok"].asBoolean)
         runBlocking { verify(sceneActions, times(1)).commitStart(preparedId) }
+    }
+
+    @Test
+    fun commit_exceptionOrUnconfirmed_isUnknown() {
+        runBlocking { whenever(sceneActions.commitStart(any())).thenThrow(IllegalStateException("db")) }
+        garminScene.prepare(uri("id=run"))
+        assertTrue(json(garminScene.commit(uri("id=$preparedId")))["unknown"].asBoolean)
+        // doReturn: whenever(commitStart()) would call the stub above, which throws.
+        runBlocking { doReturn(ActionProgress.Unconfirmed(FailureReason.NoReply)).whenever(sceneActions).commitStart(any()) }
+        garminScene.prepare(uri("id=run"))
+        assertTrue(json(garminScene.commit(uri("id=$preparedId")))["unknown"].asBoolean)
     }
 
     @Test
