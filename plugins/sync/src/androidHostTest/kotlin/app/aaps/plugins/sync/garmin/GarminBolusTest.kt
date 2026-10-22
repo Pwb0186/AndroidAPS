@@ -271,4 +271,28 @@ class GarminBolusTest : TestBaseWithProfile() {
         assertEquals("No bolus running", json(bolus.stop(uri("")))["text"].asString)
         verify(pump).stopBolusDelivering()
     }
+
+    @Test
+    fun status_bolusRunningTtAndWatchButtons_evenWithSettingOff() {
+        whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(false)
+        val now = qwEntry("now", QuickWizardMode.WIZARD)
+        val phoneOnly = qwEntry("phone", QuickWizardMode.WIZARD, device = QuickWizardEntry.DEVICE_PHONE)
+        whenever(quickWizard.list()).thenReturn(arrayListOf(now, phoneOnly))
+        whenever(garminCommandQueue.bolusInQueue()).thenReturn(false)
+        whenever(garminCommandQueue.isRunning(Command.CommandType.BOLUS)).thenReturn(true)
+        val jo = json(bolus.status(ttActive = true))
+        assertTrue(jo["ok"].asBoolean)
+        assertTrue(jo["bolusRunning"].asBoolean)
+        assertTrue(jo["ttActive"].asBoolean)
+        assertEquals(1, jo["qwCount"].asInt)
+    }
+
+    @Test
+    fun status_nothingRunning() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        val jo = json(bolus.status(ttActive = false))
+        assertFalse(jo["bolusRunning"].asBoolean)
+        assertFalse(jo["ttActive"].asBoolean)
+        assertEquals(0, jo["qwCount"].asInt)
+    }
 }

@@ -286,6 +286,7 @@ class GarminPlugin(
                 registerEndpoint("/qw/prepare", requestHandler(garminBolus::prepareQuickWizard, keyRequired = true))
                 registerEndpoint("/bolus/commit", requestHandler(garminBolus::commit, keyRequired = true))
                 registerEndpoint("/bolus/stop", requestHandler(garminBolus::stop, keyRequired = true))
+                registerEndpoint("/status", requestHandler({ garminBolus.status(loopHub.temporaryTarget != null) }, keyRequired = true))
                 awaitReady(wait)
             }
         } else if (server != null) {

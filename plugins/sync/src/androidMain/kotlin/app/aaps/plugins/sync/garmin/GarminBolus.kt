@@ -50,6 +50,8 @@ import java.time.LocalTime
  * for [PREPARED_TTL_MS], and not when another bolus was given after it was prepared.
  *
  * /bolus/stop only needs the key: stopping a bolus is a safety action, as on the Wear watch.
+ * /status only reads, so the watch can show the menu items that can be used and close its stop
+ * screen when the bolus is done.
  */
 @SingleIn(AppScope::class)
 @Inject
@@ -114,7 +116,7 @@ class GarminBolus(
     fun quickWizardList(uri: URI): CharSequence {
         refusal()?.let { return error(it) }
         val items = JsonArray()
-        quickWizard.list().filter { it.forDevice(QuickWizardEntry.DEVICE_WATCH) && inTimeWindow(it) }.forEach {
+        watchButtons().forEach {
             items.add(JsonObject().apply {
                 addProperty("guid", it.guid())
                 addProperty("name", it.buttonText())
@@ -180,6 +182,19 @@ class GarminBolus(
             addProperty("text", if (running) "Bolus stopped" else "No bolus running")
         }.toString()
     }
+
+    /**
+     * What the watch needs to build its menu and to know when a bolus is done. Not behind the bolus
+     * setting: it changes nothing, and the stop screen needs it like stop itself.
+     */
+    fun status(ttActive: Boolean): CharSequence = JsonObject().apply {
+        addProperty("ok", true)
+        addProperty("bolusRunning", commandQueue.bolusInQueue() || commandQueue.isRunning(Command.CommandType.BOLUS))
+        addProperty("ttActive", ttActive)
+        addProperty("qwCount", watchButtons().size)
+    }.toString()
+
+    private fun watchButtons() = quickWizard.list().filter { it.forDevice(QuickWizardEntry.DEVICE_WATCH) && inTimeWindow(it) }
 
     private fun park(progress: ActionProgress, byWizard: Boolean, what: String): CharSequence {
         if (progress !is ActionProgress.Prepared) return error(failure(progress))
