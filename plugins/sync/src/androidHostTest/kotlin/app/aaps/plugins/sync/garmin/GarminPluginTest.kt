@@ -320,7 +320,7 @@ class GarminPluginTest : TestBaseWithProfile() {
         gp.setupHttpServer(Duration.ofSeconds(10))
         val commands = listOf(
             "/carbs?carbs=10", "/connect?disconnectMinutes=30", "/tt/prepare?preset=activity", "/tt/commit?id=1",
-            "/wizard/prepare?carbs=10", "/qw/list", "/qw/prepare?guid=a", "/bolus/commit?id=1", "/bolus/stop",
+            "/wizard/prepare?carbs=10", "/qw/list", "/qw/prepare?guid=a", "/treatment/prepare?carbs=10", "/bolus/commit?id=1", "/bolus/stop",
             "/scene/list", "/scene/prepare?id=a", "/scene/commit?id=1", "/scene/stop", "/status"
         )
         for (path in commands) {

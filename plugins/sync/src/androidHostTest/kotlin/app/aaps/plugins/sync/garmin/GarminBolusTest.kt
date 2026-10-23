@@ -18,6 +18,7 @@ import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.IntKey
+import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.core.objects.wizard.QuickWizard
 import app.aaps.core.objects.wizard.QuickWizardEntry
 import app.aaps.core.objects.wizard.QuickWizardMode
@@ -63,11 +64,14 @@ class GarminBolusTest : TestBaseWithProfile() {
     fun setup() {
         bolus = GarminBolus(
             aapsLogger, preferences, rh, wizardExecutor, batchExecutor, quickWizard, iobCobCalculator,
-            garminProfileFunction, garminPersistenceLayer, garminCommandQueue, config
+            garminProfileFunction, garminPersistenceLayer, garminCommandQueue, config, constraintsChecker
         )
         bolus.now = { nowMs }
         bolus.secondsFromMidnight = { 12 * 3600 }
         whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(true)
+        whenever(preferences.get(GarminBooleanKey.CarbsFromWatch)).thenReturn(true)
+        whenever(constraintsChecker.getMaxBolusAllowed()).thenReturn(ConstraintObject(8.0, aapsLogger))
+        whenever(constraintsChecker.getMaxCarbsAllowed()).thenReturn(ConstraintObject(150, aapsLogger))
         whenever(preferences.get(IntKey.OverviewBolusPercentage)).thenReturn(100)
         whenever(preferences.get(BooleanKey.WearWizardBg)).thenReturn(true)
         whenever(iobCobCalculator.ads).thenReturn(ads)
@@ -399,5 +403,51 @@ class GarminBolusTest : TestBaseWithProfile() {
         assertEquals(0, inputs.eCarbsGrams)
         assertEquals(0, inputs.eCarbsDelayMinutes)
         assertFalse(json(bolus.prepareWizard(uri("carbs=40&type=soup")))["ok"].asBoolean)
+    }
+
+    @Test
+    fun treatment_insulinAndCarbs_givenAsChosen_needsBolusSetting() {
+        assertTrue(json(bolus.prepareTreatment(uri("insulin=1.55&carbs=20")))["ok"].asBoolean)
+        val captor = argumentCaptor<List<BatchAction>>()
+        runBlocking { verify(batchExecutor).prepare(captor.capture(), eq(Sources.Garmin), any()) }
+        val b = captor.firstValue.single() as BatchAction.Bolus
+        assertEquals(1.55, b.insulin)
+        assertEquals(20, b.carbs)
+        assertTrue(json(bolus.commit(uri("id=$preparedId")))["ok"].asBoolean)
+        runBlocking { verify(batchExecutor).commit(eq(preparedId), eq(Sources.Garmin), any(), any()) }
+    }
+
+    @Test
+    fun treatment_carbsOnly_needsOnlyCarbsSetting_alsoAtCommit() {
+        whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(false)
+        assertTrue(json(bolus.prepareTreatment(uri("insulin=0&carbs=15")))["ok"].asBoolean)
+        assertTrue(json(bolus.commit(uri("id=$preparedId")))["ok"].asBoolean)
+        assertEquals("Bolus from Garmin is off in AAPS", json(bolus.prepareTreatment(uri("insulin=0.5&carbs=15")))["error"].asString)
+    }
+
+    @Test
+    fun treatment_carbsSettingOff_refused_nothingChosen_refused() {
+        whenever(preferences.get(GarminBooleanKey.CarbsFromWatch)).thenReturn(false)
+        assertEquals("Carbs from Garmin are off in AAPS", json(bolus.prepareTreatment(uri("carbs=15")))["error"].asString)
+        assertEquals("Choose insulin or carbs", json(bolus.prepareTreatment(uri("insulin=0&carbs=0")))["error"].asString)
+        runBlocking { verify(batchExecutor, never()).prepare(any(), any(), any()) }
+    }
+
+    @Test
+    fun treatment_carbsSwitchedOffBeforeCommit_refused() {
+        bolus.prepareTreatment(uri("carbs=15"))
+        whenever(preferences.get(GarminBooleanKey.CarbsFromWatch)).thenReturn(false)
+        assertFalse(json(bolus.commit(uri("id=$preparedId")))["ok"].asBoolean)
+        runBlocking { verify(batchExecutor, never()).commit(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun status_limitsAndSettings() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        val jo = json(bolus.status(ttActive = false).toString())
+        assertEquals(8.0, jo["maxBolus"].asDouble)
+        assertEquals(150, jo["maxCarbs"].asInt)
+        assertTrue(jo["bolusEnabled"].asBoolean)
+        assertTrue(jo["carbsEnabled"].asBoolean)
     }
 }

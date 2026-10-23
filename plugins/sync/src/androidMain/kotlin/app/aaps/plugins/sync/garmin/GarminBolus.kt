@@ -9,6 +9,7 @@ import app.aaps.core.interfaces.bolus.WizardBolusExecutor
 import app.aaps.core.interfaces.bolus.WizardExecutor
 import app.aaps.core.interfaces.clientcontrol.ActionProgress
 import app.aaps.core.interfaces.configuration.Config
+import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
@@ -68,6 +69,7 @@ class GarminBolus(
     private val persistenceLayer: PersistenceLayer,
     private val commandQueue: CommandQueue,
     private val config: Config,
+    private val constraintChecker: ConstraintsChecker,
 ) {
 
     companion object {
@@ -103,8 +105,8 @@ class GarminBolus(
     @VisibleForTesting
     var secondsFromMidnight: () -> Int = { LocalTime.now().toSecondOfDay() }
 
-    /** A parked dose: commit it through the executor that prepared it. */
-    private class Prepared(val id: Long, val atMs: Long, val byWizard: Boolean)
+    /** A parked dose: commit it through the executor that prepared it, under the setting it needs. */
+    private class Prepared(val id: Long, val atMs: Long, val byWizard: Boolean, val carbsOnly: Boolean = false)
 
     private val lock = Any()
     private var prepared: Prepared? = null
@@ -179,12 +181,33 @@ class GarminBolus(
         return park(progress, byWizard, what = "quick wizard ${entry.buttonText()}")
     }
 
+    /**
+     * Insulin and/or carbs chosen on the watch, like the treatment dialog on the phone and the Wear
+     * watch. AAPS rounds the insulin to the pump's step and limits both to max bolus and max carbs;
+     * the confirmation shows what will be given. Carbs alone need only "Carbs from Garmin watch".
+     */
+    fun prepareTreatment(uri: URI): CharSequence {
+        val insulin = uri.queryParameter("insulin")?.toDoubleOrNull()?.takeIf { it >= 0.0 } ?: 0.0
+        val carbs = uri.queryParameter("carbs")?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
+        if (insulin == 0.0 && carbs == 0) return error("Choose insulin or carbs")
+        (if (insulin > 0.0) refusal() else carbsRefusal())?.let { return error(it) }
+        busy()?.let { return error(it) }
+        if (carbs > MAX_CARBS_FROM_WATCH) return error("Too many carbs")
+        val action = BatchAction.Bolus(
+            insulin = insulin, carbs = carbs, carbsTimeOffsetMinutes = 0, carbsDurationHours = 0,
+            recordOnly = false, notes = "", timestamp = 0L, iCfg = null
+        )
+        val progress = runBlocking { batchExecutor.prepare(listOf(action), Sources.Garmin, treatmentLabel()) }
+        return park(progress, byWizard = false, what = "treatment $insulin U $carbs g", carbsOnly = insulin == 0.0)
+    }
+
     fun commit(uri: URI): CharSequence {
-        refusal()?.let { return error(it) }
+        if (config.AAPSCLIENT) return error("Not on AAPSClient")
         val id = uri.queryParameter("id")?.toLongOrNull() ?: return error("Missing id")
         // Taken out under the lock, so an id can only be given once.
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
             ?: return error("Not prepared or already used")
+        (if (p.carbsOnly) carbsRefusal() else refusal())?.let { return error(it) }
         if (now() - p.atMs > PREPARED_TTL_MS) return error("Expired, choose again")
         // A bolus still waiting or running (also an SMB) is not in the computed dose yet.
         busy()?.let { return error(it) }
@@ -237,6 +260,11 @@ class GarminBolus(
         addProperty("bolusRunning", bolusRunning())
         addProperty("ttActive", ttActive)
         addProperty("qwCount", watchButtons().size)
+        // So the watch shows only what can be used and its pickers stop at the limits AAPS applies anyway.
+        addProperty("bolusEnabled", preferences.get(GarminBooleanKey.BolusFromWatch))
+        addProperty("carbsEnabled", preferences.get(GarminBooleanKey.CarbsFromWatch))
+        addProperty("maxBolus", constraintChecker.getMaxBolusAllowed().value())
+        addProperty("maxCarbs", constraintChecker.getMaxCarbsAllowed().value())
     }
 
     private fun watchButtons() =
@@ -256,9 +284,9 @@ class GarminBolus(
         return windowSec < 4 * 3600 && now() - entry.lastUsed() <= QuickWizardEntry.COOLDOWN_MILLIS
     }
 
-    private fun park(progress: ActionProgress, byWizard: Boolean, what: String): CharSequence {
+    private fun park(progress: ActionProgress, byWizard: Boolean, what: String, carbsOnly: Boolean = false): CharSequence {
         if (progress !is ActionProgress.Prepared) return error(failure(progress))
-        synchronized(lock) { prepared = Prepared(progress.id, now(), byWizard) }
+        synchronized(lock) { prepared = Prepared(progress.id, now(), byWizard, carbsOnly) }
         aapsLogger.info(LTag.GARMIN, "$what prepared, id ${progress.id}")
         val lines = JsonArray().apply { progress.lines.forEach { add(it.text) } }
         return JsonObject().apply {
@@ -294,6 +322,12 @@ class GarminBolus(
 
     private fun wizardLabel() = rh.gs(CoreUiStrings.boluswizard)
     private fun treatmentLabel() = rh.gs(CoreUiStrings.overview_treatment_label)
+
+    private fun carbsRefusal(): String? = when {
+        !preferences.get(GarminBooleanKey.CarbsFromWatch) -> "Carbs from Garmin are off in AAPS"
+        config.AAPSCLIENT                                 -> "Not on AAPSClient"
+        else                                              -> null
+    }
 
     private fun refusal(): String? = when {
         !preferences.get(GarminBooleanKey.BolusFromWatch) -> "Bolus from Garmin is off in AAPS"

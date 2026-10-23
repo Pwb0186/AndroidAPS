@@ -302,6 +302,7 @@ class GarminPlugin(
                 registerEndpoint("/wizard/prepare", requestHandler(garminBolus::prepareWizard, keyRequired = true))
                 registerEndpoint("/qw/list", requestHandler(garminBolus::quickWizardList, keyRequired = true))
                 registerEndpoint("/qw/prepare", requestHandler(garminBolus::prepareQuickWizard, keyRequired = true))
+                registerEndpoint("/treatment/prepare", requestHandler(garminBolus::prepareTreatment, keyRequired = true))
                 registerEndpoint("/bolus/commit", requestHandler(garminBolus::commit, keyRequired = true))
                 // Stop still works with the right key while wrong keys block the other commands.
                 registerEndpoint("/bolus/stop", requestHandler(garminBolus::stop, keyRequired = true, allowWhileLocked = true))
@@ -711,6 +712,7 @@ class GarminPlugin(
             GarminStringKey.CommandKey,
             GarminBooleanKey.TempTargetFromWatch,
             GarminBooleanKey.BolusFromWatch,
+            GarminBooleanKey.CarbsFromWatch,
             GarminBooleanKey.SceneFromWatch
         ),
         icon = pluginDescription.icon
