@@ -14,6 +14,7 @@ import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
@@ -70,6 +71,7 @@ class GarminBolus(
     private val commandQueue: CommandQueue,
     private val config: Config,
     private val constraintChecker: ConstraintsChecker,
+    private val activePlugin: ActivePlugin,
 ) {
 
     companion object {
@@ -141,7 +143,7 @@ class GarminBolus(
             source = Sources.Garmin
         )
         val progress = runBlocking { wizardExecutor.prepare(WizardExecutor.WizardSource.Manual(inputs), wizardLabel()) }
-        return park(progress, byWizard = true, what = "wizard $carbs g ${meal.param}")
+        return park(progress, byWizard = true, what = "wizard $carbs g ${meal.param}", insulin = wizardInsulin(progress))
     }
 
     /** The Quick Wizard buttons set to show on the watch whose time window is now. */
@@ -178,7 +180,12 @@ class GarminBolus(
             }
         }
         val byWizard = entry.mode() != QuickWizardMode.INSULIN && entry.mode() != QuickWizardMode.CARBS
-        return park(progress, byWizard, what = "quick wizard ${entry.buttonText()}")
+        val insulin = when (entry.mode()) {
+            QuickWizardMode.INSULIN -> entry.insulin()
+            QuickWizardMode.CARBS   -> 0.0
+            else                    -> wizardInsulin(progress)
+        }
+        return park(progress, byWizard, what = "quick wizard ${entry.buttonText()}", insulin = insulin)
     }
 
     /**
@@ -198,7 +205,7 @@ class GarminBolus(
             recordOnly = false, notes = "", timestamp = 0L, iCfg = null
         )
         val progress = runBlocking { batchExecutor.prepare(listOf(action), Sources.Garmin, treatmentLabel()) }
-        return park(progress, byWizard = false, what = "treatment $insulin U $carbs g", carbsOnly = insulin == 0.0)
+        return park(progress, byWizard = false, what = "treatment $insulin U $carbs g", carbsOnly = insulin == 0.0, insulin = insulin)
     }
 
     fun commit(uri: URI): CharSequence {
@@ -265,6 +272,8 @@ class GarminBolus(
         addProperty("carbsEnabled", preferences.get(GarminBooleanKey.CarbsFromWatch))
         addProperty("maxBolus", constraintChecker.getMaxBolusAllowed().value())
         addProperty("maxCarbs", constraintChecker.getMaxCarbsAllowed().value())
+        // The step the pump gives, so the watch cannot pick an amount AAPS would round down.
+        addProperty("bolusStep", activePlugin.activePump.bolusStepSize(1.0))
     }
 
     private fun watchButtons() =
@@ -284,7 +293,10 @@ class GarminBolus(
         return windowSec < 4 * 3600 && now() - entry.lastUsed() <= QuickWizardEntry.COOLDOWN_MILLIS
     }
 
-    private fun park(progress: ActionProgress, byWizard: Boolean, what: String, carbsOnly: Boolean = false): CharSequence {
+    /** The dose AAPS computed, after its limits; null when it did not say. */
+    private fun wizardInsulin(progress: ActionProgress): Double? = (progress as? ActionProgress.Prepared)?.wizardDetail?.totalInsulin
+
+    private fun park(progress: ActionProgress, byWizard: Boolean, what: String, carbsOnly: Boolean = false, insulin: Double? = null): CharSequence {
         if (progress !is ActionProgress.Prepared) return error(failure(progress))
         synchronized(lock) { prepared = Prepared(progress.id, now(), byWizard, carbsOnly) }
         aapsLogger.info(LTag.GARMIN, "$what prepared, id ${progress.id}")
@@ -294,6 +306,9 @@ class GarminBolus(
             // As text: the id does not fit in a number on the watch (32 bit).
             addProperty("id", progress.id.toString())
             add("lines", lines)
+            // Lets the watch skip the hold and the stop screen when no insulin is given. Left out when
+            // unknown: the watch then treats it as a bolus.
+            insulin?.let { addProperty("insulin", it) }
         }.toString()
     }
 

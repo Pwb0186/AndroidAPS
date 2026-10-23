@@ -64,7 +64,7 @@ class GarminBolusTest : TestBaseWithProfile() {
     fun setup() {
         bolus = GarminBolus(
             aapsLogger, preferences, rh, wizardExecutor, batchExecutor, quickWizard, iobCobCalculator,
-            garminProfileFunction, garminPersistenceLayer, garminCommandQueue, config, constraintsChecker
+            garminProfileFunction, garminPersistenceLayer, garminCommandQueue, config, constraintsChecker, activePlugin
         )
         bolus.now = { nowMs }
         bolus.secondsFromMidnight = { 12 * 3600 }
@@ -449,5 +449,24 @@ class GarminBolusTest : TestBaseWithProfile() {
         assertEquals(150, jo["maxCarbs"].asInt)
         assertTrue(jo["bolusEnabled"].asBoolean)
         assertTrue(jo["carbsEnabled"].asBoolean)
+        assertEquals(activePlugin.activePump.bolusStepSize(1.0), jo["bolusStep"].asDouble)
+    }
+
+    @Test
+    fun prepare_tellsTheWatchTheInsulin() {
+        assertEquals(1.55, json(bolus.prepareTreatment(uri("insulin=1.55&carbs=0")))["insulin"].asDouble)
+        assertEquals(0.0, json(bolus.prepareTreatment(uri("insulin=0&carbs=10")))["insulin"].asDouble)
+        qwEntry("c", QuickWizardMode.CARBS)
+        assertEquals(0.0, json(bolus.prepareQuickWizard(uri("guid=c")))["insulin"].asDouble)
+        qwEntry("i", QuickWizardMode.INSULIN)
+        assertEquals(1.5, json(bolus.prepareQuickWizard(uri("guid=i")))["insulin"].asDouble)
+    }
+
+    @Test
+    fun prepare_wizardWithoutDetail_leavesInsulinOut() {
+        // The wizard's dose is only known from AAPS' detail; without it the watch must treat it as a bolus.
+        val jo = json(bolus.prepareWizard(uri("carbs=40")))
+        assertTrue(jo["ok"].asBoolean)
+        assertFalse(jo.has("insulin"))
     }
 }
