@@ -469,4 +469,29 @@ class GarminBolusTest : TestBaseWithProfile() {
         assertTrue(jo["ok"].asBoolean)
         assertFalse(jo.has("insulin"))
     }
+
+    @Test
+    fun wizard_carbTimeAndPercent_likeTheAapsWizard() {
+        bolus.prepareWizard(uri("carbs=100&type=pizza&carbTime=15&percent=70"))
+        val captor = argumentCaptor<WizardExecutor.WizardSource>()
+        runBlocking { verify(wizardExecutor).prepare(captor.capture(), any()) }
+        val inputs = (captor.firstValue as WizardExecutor.WizardSource.Manual).inputs
+        assertEquals(15, inputs.carbTime)
+        assertEquals(70, inputs.percentage)
+        assertEquals(75, inputs.eCarbsDelayMinutes)
+    }
+
+    @Test
+    fun wizard_carbTimeOrPercentOutOfRange_refused() {
+        assertFalse(json(bolus.prepareWizard(uri("carbs=40&carbTime=61")))["ok"].asBoolean)
+        assertFalse(json(bolus.prepareWizard(uri("carbs=40&percent=5")))["ok"].asBoolean)
+        assertFalse(json(bolus.prepareWizard(uri("carbs=40&percent=abc")))["ok"].asBoolean)
+        runBlocking { verify(wizardExecutor, never()).prepare(any(), any()) }
+    }
+
+    @Test
+    fun status_wizardPercent() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        assertEquals(100, json(bolus.status(ttActive = false).toString())["wizardPercent"].asInt)
+    }
 }

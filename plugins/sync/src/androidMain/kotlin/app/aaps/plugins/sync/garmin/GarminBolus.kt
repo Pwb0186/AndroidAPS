@@ -120,6 +120,10 @@ class GarminBolus(
         if (carbs > MAX_CARBS_FROM_WATCH) return error("Too many carbs")
         val meal = MealType.entries.firstOrNull { it.param == (uri.queryParameter("type") ?: "bread") }
             ?: return error("Unknown meal type")
+        // Same limits as the AAPS bolus wizard.
+        val carbTime = uri.queryParameter("carbTime")?.let { it.toIntOrNull()?.takeIf { m -> m in -60..60 } ?: return error("Carb time must be -60 to 60 min") } ?: 0
+        val percentage = uri.queryParameter("percent")?.let { it.toIntOrNull()?.takeIf { p -> p in 10..200 } ?: return error("Percentage must be 10 to 200") }
+            ?: preferences.get(IntKey.OverviewBolusPercentage)
         val bg = iobCobCalculator.ads.actualBg() ?: return error(rh.gs(CoreUiStrings.wizard_no_actual_bg))
         // Split as the AAPS bolus wizard does: part of the carbs now, part as eCarbs later.
         val eCarbs = carbs * meal.eCarbsPercent / 100
@@ -127,9 +131,9 @@ class GarminBolus(
         val inputs = WizardBolusExecutor.WizardInputs(
             bg = bg.valueToUnits(profileFunction.getUnits()),
             carbs = carbs * meal.carbsPercent / 100,
-            percentage = preferences.get(IntKey.OverviewBolusPercentage),
+            percentage = percentage,
             directCorrection = 0.0,
-            carbTime = 0,
+            carbTime = carbTime,
             useBg = preferences.get(BooleanKey.WearWizardBg),
             useCob = preferences.get(BooleanKey.WearWizardCob),
             useIob = preferences.get(BooleanKey.WearWizardIob),
@@ -138,12 +142,13 @@ class GarminBolus(
             alarm = false,
             notes = "",
             eCarbsGrams = eCarbs,
-            eCarbsDelayMinutes = if (eCarbs > 0) meal.eCarbsDelayMinutes else 0,
+            // The eCarbs start after the meal, so they move with the carb time, as in the AAPS bolus wizard.
+            eCarbsDelayMinutes = if (eCarbs > 0) meal.eCarbsDelayMinutes + carbTime else 0,
             eCarbsDurationHours = if (eCarbs > 0) meal.eCarbsDurationHours else 0,
             source = Sources.Garmin
         )
         val progress = runBlocking { wizardExecutor.prepare(WizardExecutor.WizardSource.Manual(inputs), wizardLabel()) }
-        return park(progress, byWizard = true, what = "wizard $carbs g ${meal.param}", insulin = wizardInsulin(progress))
+        return park(progress, byWizard = true, what = "wizard $carbs g ${meal.param} $carbTime min $percentage %", insulin = wizardInsulin(progress))
     }
 
     /** The Quick Wizard buttons set to show on the watch whose time window is now. */
@@ -272,6 +277,7 @@ class GarminBolus(
         addProperty("carbsEnabled", preferences.get(GarminBooleanKey.CarbsFromWatch))
         addProperty("maxBolus", constraintChecker.getMaxBolusAllowed().value())
         addProperty("maxCarbs", constraintChecker.getMaxCarbsAllowed().value())
+        addProperty("wizardPercent", preferences.get(IntKey.OverviewBolusPercentage))
         // The step the pump gives, so the watch cannot pick an amount AAPS would round down.
         addProperty("bolusStep", activePlugin.activePump.bolusStepSize(1.0))
     }
