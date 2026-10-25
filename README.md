@@ -9,11 +9,9 @@ This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes 
 **Same changes on AAPS 4.0.0-rc1:** branch `GarminPush+Steps-V4.0.0-rc1`.
 **Watch face:** [aaps-garmin-push-watchface](https://github.com/Pwb0186/aaps-garmin-push-watchface),
 a Connect IQ watch face that uses all of this.
-**Other branches:**
-[`GarminSteps-dev`](https://github.com/Pwb0186/AndroidAPS/tree/GarminSteps-dev)
-has only the steps part, without push,
-[`GarminPush-dev`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush-dev)
-has only push, without steps.
+**Other branch:**
+[`GarminPush+Steps+Control-V4.0.0-rc1`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush+Steps+Control-V4.0.0-rc1)
+adds commands from a watch app (temp target, scenes, bolus).
 
 ## What it adds
 
@@ -127,9 +125,6 @@ and the tests next to it. New files: `GarminSteps.kt` (steps), `GarminV2Push.kt`
 
 ## Credits
 - The Garmin plugin is by the AAPS developers.
-- The idea of turning the watch's daily step total into steps since the last reading,
-  and the two preference names for the last total, come from MTR's OpenApsAIMI and
-  swissalpine's forks. The rest of the steps code is new.
 
 ---
 
