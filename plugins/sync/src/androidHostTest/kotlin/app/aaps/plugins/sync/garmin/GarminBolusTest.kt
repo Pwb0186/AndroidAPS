@@ -69,7 +69,6 @@ class GarminBolusTest : TestBaseWithProfile() {
         bolus.now = { nowMs }
         bolus.secondsFromMidnight = { 12 * 3600 }
         whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(true)
-        whenever(preferences.get(GarminBooleanKey.CarbsFromWatch)).thenReturn(true)
         whenever(constraintsChecker.getMaxBolusAllowed()).thenReturn(ConstraintObject(8.0, aapsLogger))
         whenever(constraintsChecker.getMaxCarbsAllowed()).thenReturn(ConstraintObject(150, aapsLogger))
         whenever(preferences.get(IntKey.OverviewBolusPercentage)).thenReturn(100)
@@ -175,6 +174,24 @@ class GarminBolusTest : TestBaseWithProfile() {
         val jo = json(bolus.commit(uri("id=$preparedId")))
         assertFalse(jo["ok"].asBoolean)
         assertEquals("Another bolus was given, choose again", jo["error"].asString)
+        runBlocking { verify(wizardExecutor, never()).commit(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun commit_bolusStoredWhileAapsComputed_refused() {
+        // AAPS takes a while to compute; an SMB stored in that time is not in the dose.
+        val start = nowMs
+        runBlocking {
+            whenever(wizardExecutor.prepare(any(), any())).thenAnswer {
+                nowMs += 2_000
+                ActionProgress.Prepared(preparedId, listOf(ConfirmationLine(ConfirmationRole.BOLUS, "Insulin: 2.00 U")))
+            }
+        }
+        bolus.prepareWizard(uri("carbs=40"))
+        val smb = mock<BS>()
+        whenever(smb.timestamp).thenReturn(start + 1_000)
+        runBlocking { whenever(garminPersistenceLayer.getNewestBolusOfType(BS.Type.SMB)).thenReturn(smb) }
+        assertEquals("Another bolus was given, choose again", json(bolus.commit(uri("id=$preparedId")))["error"].asString)
         runBlocking { verify(wizardExecutor, never()).commit(any(), any(), any(), any(), any()) }
     }
 
@@ -418,17 +435,10 @@ class GarminBolusTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun treatment_carbsOnly_needsOnlyCarbsSetting_alsoAtCommit() {
+    fun treatment_carbsOnly_needsTheSameSwitch_nothingChosen_refused() {
         whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(false)
-        assertTrue(json(bolus.prepareTreatment(uri("insulin=0&carbs=15")))["ok"].asBoolean)
-        assertTrue(json(bolus.commit(uri("id=$preparedId")))["ok"].asBoolean)
-        assertEquals("Bolus from Garmin is off in AAPS", json(bolus.prepareTreatment(uri("insulin=0.5&carbs=15")))["error"].asString)
-    }
-
-    @Test
-    fun treatment_carbsSettingOff_refused_nothingChosen_refused() {
-        whenever(preferences.get(GarminBooleanKey.CarbsFromWatch)).thenReturn(false)
-        assertEquals("Carbs from Garmin are off in AAPS", json(bolus.prepareTreatment(uri("carbs=15")))["error"].asString)
+        assertEquals("Carbs and bolus from Garmin are off in AAPS", json(bolus.prepareTreatment(uri("carbs=15")))["error"].asString)
+        whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(true)
         assertEquals("Choose insulin or carbs", json(bolus.prepareTreatment(uri("insulin=0&carbs=0")))["error"].asString)
         runBlocking { verify(batchExecutor, never()).prepare(any(), any(), any()) }
     }
@@ -436,7 +446,7 @@ class GarminBolusTest : TestBaseWithProfile() {
     @Test
     fun treatment_carbsSwitchedOffBeforeCommit_refused() {
         bolus.prepareTreatment(uri("carbs=15"))
-        whenever(preferences.get(GarminBooleanKey.CarbsFromWatch)).thenReturn(false)
+        whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(false)
         assertFalse(json(bolus.commit(uri("id=$preparedId")))["ok"].asBoolean)
         runBlocking { verify(batchExecutor, never()).commit(any(), any(), any(), any()) }
     }

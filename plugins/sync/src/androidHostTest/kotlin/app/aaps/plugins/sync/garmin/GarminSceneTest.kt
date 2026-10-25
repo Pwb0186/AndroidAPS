@@ -9,7 +9,6 @@ import app.aaps.core.interfaces.clientcontrol.FailureReason
 import app.aaps.core.interfaces.scenes.ActiveSceneSync
 import app.aaps.core.interfaces.scenes.SceneActions
 import app.aaps.core.interfaces.scenes.SceneAutomationApi
-import app.aaps.plugins.sync.garmin.keys.GarminBooleanKey
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -44,9 +43,8 @@ class GarminSceneTest : TestBaseWithProfile() {
 
     @BeforeEach
     fun setup() {
-        garminScene = GarminScene(aapsLogger, preferences, rh, sceneApi, sceneActions, activeSceneSync)
+        garminScene = GarminScene(aapsLogger, rh, sceneApi, sceneActions, activeSceneSync)
         garminScene.now = { nowMs }
-        whenever(preferences.get(GarminBooleanKey.SceneFromWatch)).thenReturn(true)
         whenever(sceneApi.getScenes()).thenReturn(listOf(run, off))
         runBlocking {
             whenever(sceneActions.prepareStart(any(), anyOrNull()))
@@ -58,16 +56,6 @@ class GarminSceneTest : TestBaseWithProfile() {
 
     private fun json(s: CharSequence): JsonObject = JsonParser.parseString(s.toString()).asJsonObject
     private fun uri(q: String) = URI("http://foo/x?$q")
-
-    @Test
-    fun settingOff_refused() {
-        whenever(preferences.get(GarminBooleanKey.SceneFromWatch)).thenReturn(false)
-        assertEquals("Scenes from Garmin are off in AAPS", json(garminScene.list(uri("")))["error"].asString)
-        assertFalse(json(garminScene.prepare(uri("id=run")))["ok"].asBoolean)
-        assertFalse(json(garminScene.commit(uri("id=$preparedId")))["ok"].asBoolean)
-        assertFalse(json(garminScene.stop(uri("")))["ok"].asBoolean)
-        runBlocking { verify(sceneActions, never()).prepareStart(any(), anyOrNull()) }
-    }
 
     @Test
     fun list_onlyEnabledScenes() {
@@ -122,8 +110,7 @@ class GarminSceneTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun status_activeSceneAndCount_evenWithSettingOff() {
-        whenever(preferences.get(GarminBooleanKey.SceneFromWatch)).thenReturn(false)
+    fun status_activeSceneAndCount() {
         whenever(sceneApi.hasSceneToStop()).thenReturn(true)
         val state = mock<ActiveSceneState>()
         whenever(state.scene).thenReturn(run)

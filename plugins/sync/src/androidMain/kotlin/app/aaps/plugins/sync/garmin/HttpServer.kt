@@ -199,6 +199,13 @@ class HttpServer internal constructor(private var aapsLogger: AAPSLogger, val po
         private val REQUEST_HEADER = Pattern.compile("(GET|POST) (\\S*) HTTP/1.1")
         private val HEADER_LINE = Pattern.compile("([A-Za-z-]+)\\s*:\\s*(.*)")
 
+        // Any app on the phone can connect. These keep a broken or hostile request from filling the
+        // memory; the watch apps send a few hundred bytes.
+        private const val MAX_LINE = 8 * 1024
+        private const val MAX_HEADERS = 50
+        @VisibleForTesting
+        internal const val MAX_BODY = 16 * 1024
+
         private fun readLine(input: InputStream, charset: Charset): String {
             val buffer = ByteArrayOutputStream(input.available())
             loop@ while (true) {
@@ -207,7 +214,10 @@ class HttpServer internal constructor(private var aapsLogger: AAPSLogger, val po
 
                     -1        -> break@loop
                     '\n'.code -> break@loop
-                    else      -> buffer.write(c)
+                    else      -> {
+                        if (buffer.size() >= MAX_LINE) throw IOException("request line too long")
+                        buffer.write(c)
+                    }
                 }
             }
             return String(buffer.toByteArray(), charset)
@@ -235,11 +245,14 @@ class HttpServer internal constructor(private var aapsLogger: AAPSLogger, val po
             val post = ("POST" == p.group(1))
             var uri = URI(p.group(2))
             val headers: MutableMap<String, String?> = HashMap()
+            // Lines, not map entries: a repeated header name would not grow the map.
+            var headerLines = 0
             while (true) {
                 val line = readLine(input, Charset.forName("ASCII"))
                 if (line.isEmpty()) {
                     break
                 }
+                if (++headerLines > MAX_HEADERS) throw IOException("too many headers")
                 val m = HEADER_LINE.matcher(line)
                 if (!m.matches()) {
                     throw IOException("invalid header line '$line'")
@@ -254,7 +267,9 @@ class HttpServer internal constructor(private var aapsLogger: AAPSLogger, val po
                 if (keepAlive && contentLength == Int.MAX_VALUE) {
                     throw IOException("keep-alive without content-length for ${GarminPlugin.maskKey(uri.toString())}")
                 }
-                body = readBody(input, contentLength)
+                if (contentLength != Int.MAX_VALUE && contentLength > MAX_BODY) throw IOException("body too large")
+                // Without a length the body ends when the client closes; stop at the limit then.
+                body = readBody(input, minOf(contentLength, MAX_BODY))
                 if (("application/x-www-form-urlencoded" == contentType)) {
                     uri = URI(uri.scheme, uri.userInfo, uri.host, uri.port, uri.path, body, null)
                     // uri.encodedQuery(body)

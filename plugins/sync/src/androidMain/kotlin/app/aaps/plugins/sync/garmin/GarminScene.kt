@@ -8,9 +8,7 @@ import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.scenes.ActiveSceneSync
 import app.aaps.core.interfaces.scenes.SceneActions
 import app.aaps.core.interfaces.scenes.SceneAutomationApi
-import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.clientcontrol.failText
-import app.aaps.plugins.sync.garmin.keys.GarminBooleanKey
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import dev.zacsweers.metro.AppScope
@@ -27,14 +25,13 @@ import java.net.URI
  * watch. /scene/stop ends the running scene without starting a follow-up scene, so the watch never
  * starts something the user did not see.
  *
- * A scene can change the profile and the loop mode, so it needs "Scenes from Garmin watch" (off by
- * default) next to the AAPS key the request handler checks.
+ * The request handler only lets these through with the watch control key, which is off until the user
+ * sets one; a scene needs no switch of its own, as the watch shows what it does before it is started.
  */
 @SingleIn(AppScope::class)
 @Inject
 class GarminScene(
     private val aapsLogger: AAPSLogger,
-    private val preferences: Preferences,
     private val rh: ResourceHelper,
     private val sceneApi: SceneAutomationApi,
     private val sceneActions: SceneActions,
@@ -58,7 +55,6 @@ class GarminScene(
 
     /** The scenes that can be started (disabled ones are hidden in AAPS too). */
     fun list(uri: URI): CharSequence {
-        refusal()?.let { return error(it) }
         val items = JsonArray()
         sceneApi.getScenes().filter { it.isEnabled }.forEach {
             items.add(JsonObject().apply {
@@ -73,7 +69,6 @@ class GarminScene(
     }
 
     fun prepare(uri: URI): CharSequence {
-        refusal()?.let { return error(it) }
         val sceneId = uri.queryParameter("id") ?: return error("Missing id")
         val progress = runBlocking { sceneActions.prepareStart(sceneId) }
         if (progress !is ActionProgress.Prepared) return error(failure(progress))
@@ -89,7 +84,6 @@ class GarminScene(
     }
 
     fun commit(uri: URI): CharSequence {
-        refusal()?.let { return error(it) }
         val id = uri.queryParameter("id")?.toLongOrNull() ?: return error("Missing id")
         // Taken out under the lock, so an id can only be committed once.
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
@@ -110,7 +104,6 @@ class GarminScene(
     }
 
     fun stop(uri: URI): CharSequence {
-        refusal()?.let { return error(it) }
         if (!sceneApi.hasSceneToStop()) return error("No scene running")
         val progress = runBlocking { sceneActions.stop(triggerChain = false) }
         aapsLogger.info(LTag.GARMIN, "scene stopped from the watch: $progress")
@@ -118,16 +111,13 @@ class GarminScene(
         return ok("Scene ended")
     }
 
-    /** For /status: whether the watch should offer scenes and "End scene". Not behind the setting: it only reads. */
+    /** For /status: whether the watch should offer scenes and "End scene". It only reads. */
     fun addStatus(json: JsonObject) {
         val active = sceneApi.hasSceneToStop()
         json.addProperty("sceneActive", active)
         if (active) activeSceneSync.getActiveState()?.let { json.addProperty("sceneName", it.scene.name) }
         json.addProperty("sceneCount", sceneApi.getScenes().count { it.isEnabled })
     }
-
-    private fun refusal(): String? =
-        if (!preferences.get(GarminBooleanKey.SceneFromWatch)) "Scenes from Garmin are off in AAPS" else null
 
     private fun failure(progress: ActionProgress): String = when (progress) {
         // The scene may or may not be started: say so, so it is not sent again blindly.

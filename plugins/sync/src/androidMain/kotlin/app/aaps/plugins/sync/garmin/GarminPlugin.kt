@@ -714,10 +714,7 @@ class GarminPlugin(
             GarminIntKey.LocalHttpPort,
             GarminStringKey.RequestKey,
             GarminStringKey.CommandKey,
-            GarminBooleanKey.TempTargetFromWatch,
-            GarminBooleanKey.BolusFromWatch,
-            GarminBooleanKey.CarbsFromWatch,
-            GarminBooleanKey.SceneFromWatch
+            GarminBooleanKey.BolusFromWatch
         ),
         icon = pluginDescription.icon
     )

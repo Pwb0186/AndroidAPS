@@ -47,9 +47,9 @@ import java.time.LocalTime
  * gives the parked dose once, after the user confirmed it on the watch. The watch never sends an
  * insulin amount.
  *
- * Because this doses insulin it is stricter than the Wear watch: it needs "Bolus from Garmin watch"
- * (off by default) next to the AAPS key the request handler checks, a prepared dose can only be given
- * for [PREPARED_TTL_MS], and not when another bolus was given after it was prepared.
+ * Because this doses insulin it is stricter than the Wear watch: it needs "Carbs and bolus from Garmin
+ * watch" (off by default) next to the control key the request handler checks, a prepared dose can only
+ * be given for [PREPARED_TTL_MS], and not when another bolus was given after AAPS began computing it.
  *
  * /bolus/stop only needs the key: stopping a bolus is a safety action, as on the Wear watch.
  * /status only reads, so the watch can show the menu items that can be used and close its stop
@@ -107,13 +107,15 @@ class GarminBolus(
     @VisibleForTesting
     var secondsFromMidnight: () -> Int = { LocalTime.now().toSecondOfDay() }
 
-    /** A parked dose: commit it through the executor that prepared it, under the setting it needs. */
-    private class Prepared(val id: Long, val atMs: Long, val byWizard: Boolean, val carbsOnly: Boolean = false)
+    /** A parked dose: commit it through the executor that prepared it. */
+    private class Prepared(val id: Long, val atMs: Long, val byWizard: Boolean)
 
     private val lock = Any()
     private var prepared: Prepared? = null
 
     fun prepareWizard(uri: URI): CharSequence {
+        // Before AAPS reads BG, IOB and boluses: a bolus stored while it computes is newer than this.
+        val startMs = now()
         refusal()?.let { return error(it) }
         busy()?.let { return error(it) }
         val carbs = uri.queryParameter("carbs")?.toIntOrNull()?.takeIf { it >= 0 } ?: return error("Missing carbs")
@@ -148,7 +150,7 @@ class GarminBolus(
             source = Sources.Garmin
         )
         val progress = runBlocking { wizardExecutor.prepare(WizardExecutor.WizardSource.Manual(inputs), wizardLabel()) }
-        return park(progress, byWizard = true, what = "wizard $carbs g ${meal.param} $carbTime min $percentage %", insulin = wizardInsulin(progress))
+        return park(progress, startMs, byWizard = true, what = "wizard $carbs g ${meal.param} $carbTime min $percentage %", insulin = wizardInsulin(progress))
     }
 
     /** The Quick Wizard buttons set to show on the watch whose time window is now. */
@@ -168,6 +170,8 @@ class GarminBolus(
     }
 
     fun prepareQuickWizard(uri: URI): CharSequence {
+        // Before AAPS reads BG, IOB and boluses: a bolus stored while it computes is newer than this.
+        val startMs = now()
         refusal()?.let { return error(it) }
         busy()?.let { return error(it) }
         val guid = uri.queryParameter("guid") ?: return error("Missing guid")
@@ -190,19 +194,21 @@ class GarminBolus(
             QuickWizardMode.CARBS   -> 0.0
             else                    -> wizardInsulin(progress)
         }
-        return park(progress, byWizard, what = "quick wizard ${entry.buttonText()}", insulin = insulin)
+        return park(progress, startMs, byWizard, what = "quick wizard ${entry.buttonText()}", insulin = insulin)
     }
 
     /**
      * Insulin and/or carbs chosen on the watch, like the treatment dialog on the phone and the Wear
      * watch. AAPS rounds the insulin to the pump's step and limits both to max bolus and max carbs;
-     * the confirmation shows what will be given. Carbs alone need only "Carbs from Garmin watch".
+     * the confirmation shows what will be given.
      */
     fun prepareTreatment(uri: URI): CharSequence {
+        // Before AAPS reads BG, IOB and boluses: a bolus stored while it computes is newer than this.
+        val startMs = now()
         val insulin = uri.queryParameter("insulin")?.toDoubleOrNull()?.takeIf { it >= 0.0 } ?: 0.0
         val carbs = uri.queryParameter("carbs")?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
         if (insulin == 0.0 && carbs == 0) return error("Choose insulin or carbs")
-        (if (insulin > 0.0) refusal() else carbsRefusal())?.let { return error(it) }
+        refusal()?.let { return error(it) }
         busy()?.let { return error(it) }
         if (carbs > MAX_CARBS_FROM_WATCH) return error("Too many carbs")
         val action = BatchAction.Bolus(
@@ -210,7 +216,7 @@ class GarminBolus(
             recordOnly = false, notes = "", timestamp = 0L, iCfg = null
         )
         val progress = runBlocking { batchExecutor.prepare(listOf(action), Sources.Garmin, treatmentLabel()) }
-        return park(progress, byWizard = false, what = "treatment $insulin U $carbs g", carbsOnly = insulin == 0.0, insulin = insulin)
+        return park(progress, startMs, byWizard = false, what = "treatment $insulin U $carbs g", insulin = insulin)
     }
 
     fun commit(uri: URI): CharSequence {
@@ -219,7 +225,7 @@ class GarminBolus(
         // Taken out under the lock, so an id can only be given once.
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
             ?: return error("Not prepared or already used")
-        (if (p.carbsOnly) carbsRefusal() else refusal())?.let { return error(it) }
+        refusal()?.let { return error(it) }
         if (now() - p.atMs > PREPARED_TTL_MS) return error("Expired, choose again")
         // A bolus still waiting or running (also an SMB) is not in the computed dose yet.
         busy()?.let { return error(it) }
@@ -274,7 +280,8 @@ class GarminBolus(
         addProperty("qwCount", watchButtons().size)
         // So the watch shows only what can be used and its pickers stop at the limits AAPS applies anyway.
         addProperty("bolusEnabled", preferences.get(GarminBooleanKey.BolusFromWatch))
-        addProperty("carbsEnabled", preferences.get(GarminBooleanKey.CarbsFromWatch))
+        // One switch covers both; the watch still reads two fields.
+        addProperty("carbsEnabled", preferences.get(GarminBooleanKey.BolusFromWatch))
         addProperty("maxBolus", constraintChecker.getMaxBolusAllowed().value())
         addProperty("maxCarbs", constraintChecker.getMaxCarbsAllowed().value())
         addProperty("wizardPercent", preferences.get(IntKey.OverviewBolusPercentage))
@@ -302,9 +309,9 @@ class GarminBolus(
     /** The dose AAPS computed, after its limits; null when it did not say. */
     private fun wizardInsulin(progress: ActionProgress): Double? = (progress as? ActionProgress.Prepared)?.wizardDetail?.totalInsulin
 
-    private fun park(progress: ActionProgress, byWizard: Boolean, what: String, carbsOnly: Boolean = false, insulin: Double? = null): CharSequence {
+    private fun park(progress: ActionProgress, startMs: Long, byWizard: Boolean, what: String, insulin: Double? = null): CharSequence {
         if (progress !is ActionProgress.Prepared) return error(failure(progress))
-        synchronized(lock) { prepared = Prepared(progress.id, now(), byWizard, carbsOnly) }
+        synchronized(lock) { prepared = Prepared(progress.id, startMs, byWizard) }
         aapsLogger.info(LTag.GARMIN, "$what prepared, id ${progress.id}")
         val lines = JsonArray().apply { progress.lines.forEach { add(it.text) } }
         return JsonObject().apply {
@@ -344,14 +351,8 @@ class GarminBolus(
     private fun wizardLabel() = rh.gs(CoreUiStrings.boluswizard)
     private fun treatmentLabel() = rh.gs(CoreUiStrings.overview_treatment_label)
 
-    private fun carbsRefusal(): String? = when {
-        !preferences.get(GarminBooleanKey.CarbsFromWatch) -> "Carbs from Garmin are off in AAPS"
-        config.AAPSCLIENT                                 -> "Not on AAPSClient"
-        else                                              -> null
-    }
-
     private fun refusal(): String? = when {
-        !preferences.get(GarminBooleanKey.BolusFromWatch) -> "Bolus from Garmin is off in AAPS"
+        !preferences.get(GarminBooleanKey.BolusFromWatch) -> "Carbs and bolus from Garmin are off in AAPS"
         // On AAPSClient the bolus would run on the master, but stop and status only see this phone.
         config.AAPSCLIENT                                 -> "Not on AAPSClient"
         else                                              -> null

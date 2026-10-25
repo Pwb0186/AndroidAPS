@@ -17,7 +17,6 @@ import app.aaps.core.interfaces.utils.HardLimits
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.clientcontrol.failText
-import app.aaps.plugins.sync.garmin.keys.GarminBooleanKey
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import kotlinx.coroutines.runBlocking
@@ -31,10 +30,10 @@ import java.net.URI
  * and an id. The watch shows that text, and only when the user confirms it there, /tt/commit?id=...
  * applies the parked temp target, once.
  *
- * The endpoints are on localhost, where any app on the phone can call them. They therefore only
- * work when "Temp target from Garmin watch" is on (off by default), and the request handler only
- * lets them through with the AAPS key. Only the presets from the AAPS temp target settings can be
- * set, and only the newest id is accepted, for [PREPARED_TTL_MS].
+ * The endpoints are on localhost, where any app on the phone can call them. The request handler
+ * therefore only lets them through with the watch control key, which is off until the user sets one;
+ * a temp target needs no switch of its own. The presets come from the AAPS temp target settings, a
+ * manual target is limited like in AAPS, and only the newest id is accepted, for [PREPARED_TTL_MS].
  */
 class GarminTempTarget(
     private val aapsLogger: AAPSLogger,
@@ -62,7 +61,6 @@ class GarminTempTarget(
     private var prepared: Prepared? = null
 
     fun prepare(uri: URI): CharSequence {
-        refusal()?.let { return error(it) }
         val preset = uri.queryParameter("preset")
         val action = when (preset) {
             "activity" -> presetAction(TT.Reason.ACTIVITY)
@@ -99,7 +97,6 @@ class GarminTempTarget(
     }
 
     fun commit(uri: URI): CharSequence {
-        refusal()?.let { return error(it) }
         val id = uri.queryParameter("id")?.toLongOrNull() ?: return error("Missing id")
         // Taken out under the lock, so an id can only be committed once.
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
@@ -127,11 +124,6 @@ class GarminTempTarget(
     private fun presetAction(reason: TT.Reason): BatchAction.TempTarget {
         val mgdl = preferences.ttTargetMgdl(reason)
         return BatchAction.TempTarget(reason.text, mgdl, mgdl, preferences.ttDurationMinutes(reason), 0)
-    }
-
-    private fun refusal(): String? = when {
-        !preferences.get(GarminBooleanKey.TempTargetFromWatch) -> "Temp target from Garmin is off in AAPS"
-        else                                                   -> null
     }
 
     private fun failure(progress: ActionProgress): String = when (progress) {
