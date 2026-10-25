@@ -1,5 +1,7 @@
 package app.aaps.plugins.sync.garmin
 
+import app.aaps.core.data.configuration.Constants
+import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.TT
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ui.ConfirmationLine
@@ -38,13 +40,14 @@ class GarminTempTargetTest : TestBaseWithProfile() {
 
     private var nowMs = 1_000_000L
     private var activeTt: TT? = null
+    private var unit = GlucoseUnit.MMOL
     private lateinit var tt: GarminTempTarget
 
     private val preparedId = 1_792_500_000_123L
 
     @BeforeEach
     fun setup() {
-        tt = GarminTempTarget(aapsLogger, preferences, rh, batchExecutor, { activeTt }) { nowMs }
+        tt = GarminTempTarget(aapsLogger, preferences, rh, batchExecutor, { activeTt }, { unit }) { nowMs }
         whenever(preferences.get(GarminBooleanKey.TempTargetFromWatch)).thenReturn(true)
         // No presets saved: AAPS' default preset values are used.
         whenever(preferences.get(StringNonKey.TempTargetPresets)).thenReturn("")
@@ -203,5 +206,34 @@ class GarminTempTargetTest : TestBaseWithProfile() {
         val jo = get("/tt/commit?id=$id")
         assertEquals("Not allowed", jo["error"].asString)
         assertFalse(jo.has("unknown"))
+    }
+
+    @Test
+    fun prepare_manual_mmolConvertedToMgdl() {
+        assertTrue(get("/tt/prepare?preset=manual&target=8.0&duration=90")["ok"].asBoolean)
+        val captor = argumentCaptor<List<BatchAction>>()
+        runBlocking { verify(batchExecutor).prepare(captor.capture(), any(), any()) }
+        val a = captor.firstValue.single() as BatchAction.TempTarget
+        assertEquals(8.0 * Constants.MMOLL_TO_MGDL, a.lowMgdl, 0.001)
+        assertEquals(a.lowMgdl, a.highMgdl, 0.0)
+        assertEquals(90, a.durationMinutes)
+    }
+
+    @Test
+    fun prepare_manual_mgdl() {
+        unit = GlucoseUnit.MGDL
+        assertTrue(get("/tt/prepare?preset=manual&target=144&duration=60")["ok"].asBoolean)
+        val captor = argumentCaptor<List<BatchAction>>()
+        runBlocking { verify(batchExecutor).prepare(captor.capture(), any(), any()) }
+        assertEquals(144.0, (captor.firstValue.single() as BatchAction.TempTarget).lowMgdl, 0.0)
+    }
+
+    @Test
+    fun prepare_manual_outOfLimits_refused() {
+        assertFalse(get("/tt/prepare?preset=manual&target=3.9&duration=60")["ok"].asBoolean)
+        assertFalse(get("/tt/prepare?preset=manual&target=10.1&duration=60")["ok"].asBoolean)
+        assertFalse(get("/tt/prepare?preset=manual&target=8.0&duration=721")["ok"].asBoolean)
+        assertFalse(get("/tt/prepare?preset=manual&target=8.0")["ok"].asBoolean)
+        assertTrue(get("/tt/prepare?preset=manual&target=10.0&duration=720")["ok"].asBoolean)
     }
 }

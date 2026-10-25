@@ -1,6 +1,8 @@
 package app.aaps.plugins.sync.garmin
 
 import androidx.annotation.VisibleForTesting
+import app.aaps.core.data.configuration.Constants
+import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.TT
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.interfaces.bolus.BatchAction
@@ -11,6 +13,7 @@ import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.tempTargets.ttDurationMinutes
 import app.aaps.core.interfaces.tempTargets.ttTargetMgdl
+import app.aaps.core.interfaces.utils.HardLimits
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.clientcontrol.failText
@@ -39,6 +42,7 @@ class GarminTempTarget(
     private val rh: TextResolver,
     private val batchExecutor: BatchExecutor,
     private val activeTempTarget: () -> TT?,
+    private val glucoseUnit: () -> GlucoseUnit,
     private val now: () -> Long,
 ) {
 
@@ -47,6 +51,9 @@ class GarminTempTarget(
         /** How long a prepared temp target can be confirmed. The watch closes its confirmation after 60 s. */
         @VisibleForTesting
         const val PREPARED_TTL_MS = 120_000L
+
+        /** A manual temp target from the watch: long enough for a run, short enough to be forgotten safely. */
+        private val MANUAL_DURATION_MIN = 5..720
     }
 
     private class Prepared(val id: Long, val atMs: Long)
@@ -61,6 +68,16 @@ class GarminTempTarget(
             "activity" -> presetAction(TT.Reason.ACTIVITY)
             "eating"   -> presetAction(TT.Reason.EATING_SOON)
             "hypo"     -> presetAction(TT.Reason.HYPOGLYCEMIA)
+            "manual"   -> {
+                // The watch sends the target in the user's unit, as AAPS shows it.
+                val target = uri.queryParameter("target")?.toDoubleOrNull() ?: return error("Missing target")
+                val duration = uri.queryParameter("duration")?.toIntOrNull() ?: return error("Missing duration")
+                val mgdl = if (glucoseUnit() == GlucoseUnit.MGDL) target else target * Constants.MMOLL_TO_MGDL
+                // One value is both the low and the high end, so it must pass both limits, as the Wear watch checks.
+                if (mgdl !in HardLimits.LIMIT_TEMP_MIN_BG || mgdl !in HardLimits.LIMIT_TEMP_MAX_BG) return error("Target out of range")
+                if (duration !in MANUAL_DURATION_MIN) return error("Duration must be 5 to 720 min")
+                BatchAction.TempTarget(TT.Reason.CUSTOM.text, mgdl, mgdl, duration, 0)
+            }
             // Duration 0 cancels the running temp target, as from the Wear watch. Without a running
             // one AAPS would still answer "applied", which would tell the user something was cancelled.
             "cancel"   ->

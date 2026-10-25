@@ -114,7 +114,7 @@ class GarminPlugin(
 
     /** Temp target from the watch (/tt/prepare, /tt/commit). See GarminTempTarget.kt. */
     @VisibleForTesting
-    val garminTempTarget = GarminTempTarget(aapsLogger, preferences, resourceHelper, batchExecutor, { loopHub.temporaryTarget }) { clock.millis() }
+    val garminTempTarget = GarminTempTarget(aapsLogger, preferences, resourceHelper, batchExecutor, { loopHub.temporaryTarget }, { loopHub.glucoseUnit }) { clock.millis() }
 
     companion object {
         // The AAPS key in a logged request (?key=... / &key=...).
@@ -311,7 +311,11 @@ class GarminPlugin(
                 registerEndpoint("/scene/commit", requestHandler(garminScene::commit, keyRequired = true))
                 registerEndpoint("/scene/stop", requestHandler(garminScene::stop, keyRequired = true))
                 registerEndpoint("/status", requestHandler({
-                    garminBolus.status(loopHub.temporaryTarget != null).also { garminScene.addStatus(it) }.toString()
+                    garminBolus.status(loopHub.temporaryTarget != null).also {
+                        garminScene.addStatus(it)
+                        // The unit the watch shows and sends a manual temp target in.
+                        it.addProperty("units", if (loopHub.glucoseUnit == GlucoseUnit.MGDL) "mgdl" else "mmol")
+                    }.toString()
                 }, keyRequired = true))
                 awaitReady(wait)
             }
