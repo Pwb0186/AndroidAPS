@@ -39,8 +39,11 @@ Therefore:
 - **Request Key** (the existing AAPS key) opens no commands. AAPS sends it in its push
   messages to every watch app that has called `/get`, so it must not be trusted.
 - Reading (`/get`, `/sgv.json`) needs no key.
-- After 5 wrong control keys in total, all commands are refused for 15 min (HTTP 429).
-  Stop bolus still works with the right key.
+- Wrong control key 5 times (in total, from any app): the watch commands are locked for
+  15 minutes.
+- While locked, every command is refused (HTTP 429), even with the right key.
+- Except stop bolus: it is never locked. With the right key you can always stop a running
+  bolus from the watch.
 - A bolus is refused while another bolus or SMB is queued or running, and at commit when a
   bolus or SMB was stored after AAPS began computing the prepared dose.
 - Bolus commands are refused on AAPSClient.
