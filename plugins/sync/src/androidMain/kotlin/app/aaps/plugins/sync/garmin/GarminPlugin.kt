@@ -67,13 +67,13 @@ import kotlin.reflect.KClass
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
- * carbs, heart rate and pump disconnect events from the device. It communicates
+ * carbs, heart rate, steps and pump disconnect events from the device. It communicates
  * via HTTP on localhost or Garmin's native CIQ library.
  *
  * On a client it only shows values: carbs and pump connect or disconnect from the
  * watch are refused there, see [refuseOnClient].
- * The V2 push-to-pull machinery (dynamic app discovery, push throttling)
- * lives in GarminV2Push.
+ * Push-to-pull (the registry of watch apps and the push throttle) is in GarminV2Push,
+ * steps are in GarminSteps.
  */
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
 @IntKey(370)
@@ -119,9 +119,7 @@ class GarminPlugin(
         @VisibleForTesting
         fun maskKey(s: String) = KEY_IN_QUERY.replace(s, "key=***")
 
-        // Database types whose changes trigger a V2 push (debounced). This replaces the
-        // RxBus events used by the old (master) AAPS (EventTreatmentChange, EventTempTargetChange,
-        // EventTempBasalChange, EventRunningModeChange), which no longer exist.
+        // Database types whose changes trigger a push (debounced).
         // GV is not here: a new glucose value pushes at once in onNewBloodGlucose().
         private val PUSH_TRIGGER_TYPES: Set<KClass<*>> =
             setOf(BS::class, CA::class, TT::class, TB::class, EB::class, RM::class)
@@ -186,7 +184,7 @@ class GarminPlugin(
     }
 
     private fun createGarminMessenger(): GarminMessenger {
-        val enableDebug = false // sp.getBoolean("communication_ciq_debug_mode", false)
+        val enableDebug = false
         aapsLogger.info(LTag.GARMIN, "initialize IQ messenger in debug=$enableDebug")
         return GarminMessenger(
             aapsLogger, context, glucoseAppIds, { _, _ -> }, true, enableDebug,
@@ -223,9 +221,9 @@ class GarminPlugin(
             .debounce(PUSH_TRIGGER_DEBOUNCE_MS)
             .collectResilient(scope, aapsLogger, LTag.GARMIN) { onLoopDataChanged() }
         setupHttpServer()
-        // As in master, the Connect IQ messenger (the binding to Garmin Connect) only
-        // runs when something uses it: an AAPS key is set - master sends it to the watch
-        // apps - or a push-to-pull watch face has polled within the last 15 min.
+        // As in the original Garmin plugin, the Connect IQ messenger (the binding to Garmin
+        // Connect) only runs when something uses it: an AAPS key is set - the key is sent to
+        // the watch apps - or a push-to-pull watch face has polled within the last 15 min.
         // Otherwise AAPS stays out of Garmin Connect, as before, for users of HTTP-only
         // watch faces, data fields or xDrip. A push watch face that polls later starts
         // it (ensureGarminMessenger in onGetBloodGlucose).
@@ -414,8 +412,8 @@ class GarminPlugin(
 
     @VisibleForTesting
     fun requestHandler(action: (URI) -> CharSequence) = { caller: SocketAddress, uri: URI, _: String? ->
-        // Same rule as upstream (master) AAPS, for backward compatibility with older watch
-        // faces and data fields: with no key set, every endpoint is open (including /carbs
+        // Same rule as the original Garmin plugin, so older watch faces and data fields
+        // keep working: with no key set, every endpoint is open (including /carbs
         // and /connect); with a key set, every endpoint needs it. On a wrong key the key is
         // pushed to the watch apps (V1 message), so an old watch face can pick it up.
         val key = garminAapsKey
@@ -490,8 +488,8 @@ class GarminPlugin(
     }
 
     // Decodes each value exactly once (see URI.queryParameter in GarminQuery.kt).
-    // POST form bodies stay encoded, as in master - HttpServer builds their URI
-    // with extra quoting.
+    // POST form bodies stay encoded, as in the original Garmin plugin - HttpServer builds
+    // their URI with extra quoting.
     private fun getQueryParameter(uri: URI, name: String): String? = uri.queryParameter(name)
 
     private fun getQueryParameter(
