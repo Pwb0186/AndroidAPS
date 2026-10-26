@@ -117,10 +117,9 @@ class GarminV2Push(
     }
 
     /**
-     * V2 wake-up signal: intentionally minimal - just the key and "updateWatch" command.
-     * The watch ignores the payload and immediately does an HTTP GET (/get) to fetch
-     * the full glucose dataset itself, eliminating the 30-second long-poll connection
-     * used by the old V1 pull model. Full data is never sent via CIQ in V2.
+     * The push message: only the AAPS key and the command "updateWatch". The watch then
+     * fetches the data itself with /get, using this key. No glucose data is sent over
+     * Connect IQ.
      */
     fun getGlucoseMessageV2(key: String): Map<String, Any> {
         return mapOf(

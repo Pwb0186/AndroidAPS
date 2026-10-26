@@ -25,9 +25,8 @@ class GarminMessenger(
     private var activeDeviceClient: GarminDeviceClient? = null
     /** All devices that where connected since this instance was created. */
     private val devices = mutableMapOf<Long, GarminDevice>()
-    // CopyOnWriteArrayList ensures thread safety: onConnect/onDisconnect write
-    // from the ConnectIQ callback thread while sendMessage() iterates from the
-    // RxJava IO thread. mutableListOf() was not safe for concurrent access.
+    // CopyOnWriteArrayList: onConnect/onDisconnect write from the ConnectIQ callback
+    // thread while sendMessage() iterates on another thread.
     private val clients = CopyOnWriteArrayList<GarminClient>()
     private val appIdNames = mutableMapOf<String, String>()
     init {
