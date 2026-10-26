@@ -210,7 +210,10 @@ class LoopHubImpl @Inject constructor(
         )
     }
 
-    /** One record per window, all with the same counts; see [LoopHub.storeStepsCount]. */
+    /** One record per window, all with the same counts; see [LoopHub.storeStepsCount].
+     *  A window that the history does not cover yet has no record of its own, and its
+     *  field is 0 in the other records. Read a window from the record with that duration,
+     *  as the Automation trigger does. */
     private fun stepsCountRecords(timestamp: Instant, stepsPerWindow: Map<Int, Int>, device: String?): List<SC> {
         fun steps(window: Int) = stepsPerWindow[window] ?: 0
         return stepsPerWindow.keys.sorted().map { window ->

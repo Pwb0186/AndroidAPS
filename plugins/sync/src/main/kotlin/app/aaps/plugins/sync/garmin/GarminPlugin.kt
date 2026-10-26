@@ -60,12 +60,11 @@ import kotlin.math.roundToInt
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
- * carbs, heart rate and pump disconnect events from the device. It communicates
+ * carbs, heart rate, steps and pump disconnect events from the device. It communicates
  * via HTTP on localhost or Garmin's native CIQ library.
  *
- * The V2 push-to-pull machinery (dynamic app discovery, push throttling)
- * lives in GarminV2Push - see that file for
- * why it was split out and how it and this class divide the work.
+ * Push-to-pull (the registry of watch apps and the push throttle) is in GarminV2Push,
+ * steps are in GarminSteps.
  */
 @Singleton
 class GarminPlugin @Inject constructor(
@@ -195,7 +194,7 @@ class GarminPlugin @Inject constructor(
     }
 
     private fun createGarminMessenger(): GarminMessenger {
-        val enableDebug = false // sp.getBoolean("communication_ciq_debug_mode", false)
+        val enableDebug = false
         aapsLogger.info(LTag.GARMIN, "initialize IQ messenger in debug=$enableDebug")
         return GarminMessenger(
             aapsLogger, context, glucoseAppIds, { _, _ -> }, true, enableDebug,
@@ -264,9 +263,9 @@ class GarminPlugin @Inject constructor(
                 .subscribe { safely("calculation finished") { onCalculationFinished() } }
         )
         setupHttpServer()
-        // As in master, the Connect IQ messenger (the binding to Garmin Connect) only
-        // runs when something uses it: an AAPS key is set - master sends it to the watch
-        // apps - or a push-to-pull watch face has polled within the last 15 min.
+        // As in the original Garmin plugin, the Connect IQ messenger (the binding to Garmin
+        // Connect) only runs when something uses it: an AAPS key is set - the key is sent to
+        // the watch apps - or a push-to-pull watch face has polled within the last 15 min.
         // Otherwise AAPS stays out of Garmin Connect, as before, for users of HTTP-only
         // watch faces, data fields or xDrip. A push watch face that polls later starts
         // it (ensureGarminMessenger in onGetBloodGlucose).
@@ -558,8 +557,8 @@ class GarminPlugin @Inject constructor(
 
     @VisibleForTesting
     fun requestHandler(action: (URI) -> CharSequence) = { caller: SocketAddress, uri: URI, _: String? ->
-        // Same rule as upstream (master) AAPS, for backward compatibility with older watch
-        // faces and data fields: with no key set, every endpoint is open (including /carbs
+        // Same rule as the original Garmin plugin, so older watch faces and data fields
+        // keep working: with no key set, every endpoint is open (including /carbs
         // and /connect); with a key set, every endpoint needs it. On a wrong key the key is
         // pushed to the watch apps (V1 message), so an old watch face can pick it up.
         val key = garminAapsKey
@@ -648,7 +647,7 @@ class GarminPlugin @Inject constructor(
     // Reads the raw (still encoded) query and decodes each value exactly once.
     // uri.query is already decoded, so decoding that again turned "+" into a space
     // and broke "%xx" (e.g. a key with "+" never matched). POST form bodies stay
-    // encoded, as in master - HttpServer builds their URI with extra quoting.
+    // encoded, as in the original Garmin plugin - HttpServer builds their URI with extra quoting.
     private fun getQueryParameter(uri: URI, name: String): String? {
         val raw = (uri.rawQuery ?: "")
             .split("&")
