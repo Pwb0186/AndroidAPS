@@ -10,28 +10,36 @@ import app.aaps.core.data.model.RM
 import app.aaps.core.data.model.SC
 import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TB
+import app.aaps.core.data.model.TE
 import app.aaps.core.data.model.TrendArrow
+import app.aaps.core.data.pump.defs.PumpDescription
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
 import app.aaps.core.interfaces.aps.IobTotal
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.bolus.WizardBolusExecutor
+import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
 import app.aaps.core.interfaces.iob.IobCobCalculator
+import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.EffectiveProfile
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.profile.ProfileUtil
+import app.aaps.core.interfaces.pump.PumpInsulin
+import app.aaps.core.interfaces.pump.PumpWithConcentration
 import app.aaps.core.interfaces.queue.CommandQueue
+import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.shared.tests.TestBase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
@@ -60,6 +68,8 @@ import kotlin.time.Duration.Companion.milliseconds
 
 class LoopHubTest : TestBase() {
 
+    @Mock lateinit var activePlugin: ActivePlugin
+    @Mock lateinit var config: Config
     @Mock lateinit var commandQueue: CommandQueue
     @Mock lateinit var constraints: ConstraintsChecker
     @Mock lateinit var iobCobCalculator: IobCobCalculator
@@ -83,7 +93,7 @@ class LoopHubTest : TestBase() {
             if (u == GlucoseUnit.MGDL) v else (18.0 * v)
         }
         loopHub = LoopHubImpl(
-            aapsLogger, commandQueue, constraints, iobCobCalculator, loop,
+            aapsLogger, activePlugin, config, commandQueue, constraints, iobCobCalculator, loop,
             profileFunction, profileUtil, persistenceLayer, preferences, processedTbrEbData,
             wizardBolusExecutor, testScope
         )
@@ -193,6 +203,65 @@ class LoopHubTest : TestBase() {
         originalEnd = 100 + duration,
         iCfg = ICfg("label", 0, 0)
     )
+
+    private suspend fun stubPump(reservoir: Double, patch: Boolean) {
+        val pump = mock<PumpWithConcentration>()
+        whenever(pump.reservoirLevel).thenReturn(MutableStateFlow(PumpInsulin(reservoir)))
+        whenever(pump.pumpDescription).thenReturn(PumpDescription().apply {
+            isPatchPump = patch
+            maxReservoirReading = 50
+        })
+        whenever(activePlugin.activePump).thenReturn(pump)
+        val profile = mock<EffectiveProfile>()
+        whenever(profile.iCfg).thenReturn(ICfg("label", 0, 0))
+        whenever(profileFunction.getProfile()).thenReturn(profile)
+        whenever(preferences.get(IntKey.OverviewResWarning)).thenReturn(80)
+        whenever(preferences.get(IntKey.OverviewResCritical)).thenReturn(10)
+        whenever(preferences.get(IntKey.OverviewCageWarning)).thenReturn(48)
+        whenever(preferences.get(IntKey.OverviewCageCritical)).thenReturn(72)
+    }
+
+    @Test
+    fun testPumpStatus() = runTest {
+        stubPump(reservoir = 8.0, patch = false)
+        val change = TE(timestamp = 5_000, type = TE.Type.CANNULA_CHANGE, glucoseUnit = GlucoseUnit.MGDL)
+        whenever(persistenceLayer.getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)).thenReturn(change)
+        assertEquals(
+            PumpStatus(8.0, 2, Instant.ofEpochMilli(5_000), 48, 72),
+            loopHub.pumpStatus
+        )
+        verify(profileFunction).getProfile()
+        verify(persistenceLayer).getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
+    }
+
+    @Test
+    fun testPumpStatus_Warning() = runTest {
+        stubPump(reservoir = 40.0, patch = true)
+        assertEquals(1, loopHub.pumpStatus.reservoirLevel)
+        verify(profileFunction).getProfile()
+        verify(persistenceLayer).getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
+    }
+
+    @Test
+    fun testPumpStatus_PatchAtMaxIsUnknown() = runTest {
+        // An Omnipod at "50+" must not warn against the 80 U default.
+        stubPump(reservoir = 50.0, patch = true)
+        val status = loopHub.pumpStatus
+        assertNull(status.reservoir)
+        assertEquals(0, status.reservoirLevel)
+        assertNull(status.cannulaChange)
+        verify(profileFunction).getProfile()
+        verify(persistenceLayer).getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
+    }
+
+    @Test
+    fun testPumpStatus_AapsClient() = runTest {
+        whenever(config.AAPSCLIENT).thenReturn(true)
+        whenever(preferences.get(IntKey.OverviewCageWarning)).thenReturn(48)
+        whenever(preferences.get(IntKey.OverviewCageCritical)).thenReturn(72)
+        assertNull(loopHub.pumpStatus.reservoir)
+        verify(persistenceLayer).getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
+    }
 
     @Test
     fun testIsTemporaryProfileTrue() = runTest {

@@ -92,6 +92,7 @@ class GarminPluginTest : TestBaseWithProfile() {
         verify(loopHub, atMost(3)).highGlucoseMark
         verify(loopHub, atMost(3)).temporaryTarget
         verify(loopHub, atMost(3)).isLoopEnabled
+        verify(loopHub, atMost(3)).pumpStatus
         verifyNoMoreInteractions(loopHub)
     }
 
@@ -395,6 +396,42 @@ class GarminPluginTest : TestBaseWithProfile() {
             99,
             hr["device"] as String
         )
+    }
+
+    @Test
+    fun testOnGetBloodGlucose_PumpStatus() {
+        whenever(loopHub.temporaryBasal).thenReturn(Double.NaN)
+        whenever(loopHub.getGlucoseValues(getGlucoseValuesFrom, true)).thenReturn(
+            listOf(createGlucoseValue(Instant.ofEpochSecond(1_000)))
+        )
+        whenever(loopHub.pumpStatus).thenReturn(
+            PumpStatus(reservoir = 17.6, reservoirLevel = 1, cannulaChange = Instant.ofEpochSecond(5),
+                       cannulaWarnHours = 48, cannulaCritHours = 72)
+        )
+        val result = gp.onGetBloodGlucose(createUri(emptyMap())).toString()
+        Truth.assertThat(result).contains(
+            """"reservoir":18,"reservoirLevel":1,"cannulaChangeSec":5,"cannulaWarnH":48,"cannulaCritH":72"""
+        )
+        verify(loopHub).getGlucoseValues(getGlucoseValuesFrom, true)
+        verify(loopHub).isConnected
+        verify(loopHub).glucoseUnit
+    }
+
+    @Test
+    fun testOnGetBloodGlucose_PumpStatusUnknownReservoir() {
+        whenever(loopHub.temporaryBasal).thenReturn(Double.NaN)
+        whenever(loopHub.getGlucoseValues(getGlucoseValuesFrom, true)).thenReturn(emptyList())
+        whenever(loopHub.pumpStatus).thenReturn(
+            PumpStatus(reservoir = null, reservoirLevel = 0, cannulaChange = null,
+                       cannulaWarnHours = 48, cannulaCritHours = 72)
+        )
+        val result = gp.onGetBloodGlucose(createUri(emptyMap())).toString()
+        Truth.assertThat(result).contains(""""reservoirLevel":0,"cannulaWarnH":48""")
+        Truth.assertThat(result).doesNotContain(""""reservoir":""")
+        Truth.assertThat(result).doesNotContain("cannulaChangeSec")
+        verify(loopHub).getGlucoseValues(getGlucoseValuesFrom, true)
+        verify(loopHub).isConnected
+        verify(loopHub).glucoseUnit
     }
 
     @Test

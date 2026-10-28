@@ -539,6 +539,14 @@ class GarminPlugin(
             if (it.hasEnd) jo.addProperty("temporaryTargetEndSec", it.end / 1000)
             jo.addProperty("temporaryTargetDurationMin", it.duration / 60000)
         } ?: jo.addProperty("temporaryTargetActive", false)
+        loopHub.pumpStatus?.let { ps ->
+            ps.reservoir?.let { jo.addProperty("reservoir", it.roundToInt()) }
+            jo.addProperty("reservoirLevel", ps.reservoirLevel)
+            // The watch counts the age itself from this, so it stays right between fetches.
+            ps.cannulaChange?.let { jo.addProperty("cannulaChangeSec", it.epochSecond) }
+            jo.addProperty("cannulaWarnH", ps.cannulaWarnHours)
+            jo.addProperty("cannulaCritH", ps.cannulaCritHours)
+        }
         jo.addProperty("connected", loopHub.isConnected)
         jo.addProperty("loopEnabled", loopHub.isLoopEnabled)
         jo.addProperty("timestamp", clock.instant().epochSecond)
