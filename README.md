@@ -9,7 +9,8 @@ risks. Use at your own risk.
 
 This branch adds commands from a Garmin watch app to the AAPS Garmin plugin: temp target,
 scenes, Quick Wizard, bolus wizard, treatment (insulin and/or carbs) and stop bolus. The
-matching watch app is a separate Connect IQ widget that you build and install yourself.
+matching watch app is a separate Connect IQ widget that you build and install yourself:
+[AAPS Control widget](https://github.com/Pwb0186/aaps-garmin-control-widget).
 
 ## How a command works
 Every command that changes treatment uses two steps, like the Wear OS watch:
