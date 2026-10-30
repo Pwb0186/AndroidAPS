@@ -14,10 +14,12 @@ import app.aaps.core.interfaces.clientcontrol.ActionProgress
 import app.aaps.core.interfaces.clientcontrol.FailureReason
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.profile.ProfileFunction
+import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.IntKey
+import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.core.objects.wizard.QuickWizard
 import app.aaps.core.objects.wizard.QuickWizardEntry
@@ -27,6 +29,8 @@ import app.aaps.plugins.sync.garmin.keys.GarminBooleanKey
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -55,6 +59,7 @@ class GarminBolusTest : TestBaseWithProfile() {
     @Mock private lateinit var garminProfileFunction: ProfileFunction
     @Mock private lateinit var garminPersistenceLayer: PersistenceLayer
     @Mock private lateinit var garminCommandQueue: CommandQueue
+    private val bolusProgressData by lazy { BolusProgressData(ch, CoroutineScope(Dispatchers.Unconfined)) }
 
     private lateinit var bolus: GarminBolus
     private var nowMs = 100_000_000L
@@ -64,7 +69,8 @@ class GarminBolusTest : TestBaseWithProfile() {
     fun setup() {
         bolus = GarminBolus(
             aapsLogger, preferences, rh, wizardExecutor, batchExecutor, quickWizard, iobCobCalculator,
-            garminProfileFunction, garminPersistenceLayer, garminCommandQueue, config, constraintsChecker, activePlugin
+            garminProfileFunction, garminPersistenceLayer, garminCommandQueue, config, constraintsChecker, activePlugin,
+            bolusProgressData
         )
         bolus.now = { nowMs }
         bolus.secondsFromMidnight = { 12 * 3600 }
@@ -387,6 +393,24 @@ class GarminBolusTest : TestBaseWithProfile() {
         assertTrue(jo["bolusRunning"].asBoolean)
         assertTrue(jo["ttActive"].asBoolean)
         assertEquals(1, jo["qwCount"].asInt)
+    }
+
+    @Test
+    fun status_bolusProgress() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        bolusProgressData.start(insulin = 4.0, isSMB = false)
+        bolusProgressData.updateProgress(25, TextRef.Literal(""))
+        val jo = json(bolus.status(ttActive = false).toString())
+        assertEquals(25, jo["bolusPercent"].asInt)
+        assertEquals(4.0, jo["bolusInsulin"].asDouble, 0.001)
+    }
+
+    @Test
+    fun status_smbProgress_notSent() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        bolusProgressData.start(insulin = 0.3, isSMB = true)
+        val jo = json(bolus.status(ttActive = false).toString())
+        assertFalse(jo.has("bolusPercent"))
     }
 
     @Test

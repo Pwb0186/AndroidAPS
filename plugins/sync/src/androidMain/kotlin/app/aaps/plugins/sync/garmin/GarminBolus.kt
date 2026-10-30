@@ -16,6 +16,7 @@ import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.ProfileFunction
+import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.ResourceHelper
@@ -72,6 +73,7 @@ class GarminBolus(
     private val config: Config,
     private val constraintChecker: ConstraintsChecker,
     private val activePlugin: ActivePlugin,
+    private val bolusProgressData: BolusProgressData,
 ) {
 
     companion object {
@@ -287,6 +289,13 @@ class GarminBolus(
         addProperty("wizardPercent", preferences.get(IntKey.OverviewBolusPercentage))
         // The step the pump gives, so the watch cannot pick an amount AAPS would round down.
         addProperty("bolusStep", activePlugin.activePump.bolusStepSize(1.0))
+        // Lets the stop screen show how far the bolus has come. Only a bolus: an SMB or priming is not
+        // what the screen waits for. Percent rather than the delivered amount, because some pumps only
+        // report a percent; the watch works out the units from it.
+        bolusProgressData.state.value?.takeIf { !it.isSMB && !it.isPriming }?.let {
+            addProperty("bolusPercent", it.percent.coerceIn(0, 100))
+            addProperty("bolusInsulin", it.insulin)
+        }
     }
 
     private fun watchButtons() =
