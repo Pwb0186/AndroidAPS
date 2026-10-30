@@ -90,4 +90,4 @@ Host tests in `plugins/sync/src/androidHostTest/.../garmin`: `GarminBolusTest`,
 ./gradlew :plugins:sync:testAndroidHostTest --tests "app.aaps.plugins.sync.garmin.*"
 ```
 
-Only tested with a virtual pump.
+Only tested by one user, in daily use with an Omnipod DASH and a Forerunner 955.
