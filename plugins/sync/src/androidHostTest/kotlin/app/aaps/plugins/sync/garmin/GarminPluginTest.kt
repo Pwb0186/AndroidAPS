@@ -6,7 +6,7 @@ import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.notifications.NotificationId
-import app.aaps.core.interfaces.sharedPreferences.SP
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import app.aaps.core.keys.BooleanNonKey
 import app.aaps.core.keys.IntNonKey
 import app.aaps.core.keys.StringNonKey
@@ -61,7 +61,7 @@ class GarminPluginTest : TestBaseWithProfile() {
     @Mock private lateinit var loopHub: LoopHub
     @Mock private lateinit var persistenceLayer: PersistenceLayer
     // Named garminSp so it can't clash with an "sp" in the test base class.
-    @Mock private lateinit var garminSp: SP
+    @Mock private lateinit var garminSp: KeyValueStore
     /** Backing store for [garminSp] - GarminV2Push keeps its app registry there. */
     private val spStore = mutableMapOf<String, Any>()
     private val clock = Clock.fixed(Instant.ofEpochMilli(10_000), ZoneId.of("UTC"))
