@@ -202,6 +202,32 @@ class GarminBolusTest : TestBaseWithProfile() {
     }
 
     @Test
+    fun commit_afterTimeLimit_dropsTheParkedDose() {
+        bolus.prepareWizard(uri("carbs=40"))
+        nowMs += GarminBolus.PREPARED_TTL_MS + 1
+        bolus.commit(uri("id=$preparedId"))
+        verify(wizardExecutor).discard(preparedId)
+    }
+
+    @Test
+    fun discard_wizard_dropsInAapsAndCannotBeGivenAfter() {
+        bolus.prepareWizard(uri("carbs=40"))
+        assertTrue(json(bolus.discard(uri("id=$preparedId")))["ok"].asBoolean)
+        verify(wizardExecutor).discard(preparedId)
+        assertFalse(json(bolus.commit(uri("id=$preparedId")))["ok"].asBoolean)
+        runBlocking { verify(wizardExecutor, never()).commit(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun discard_wrongOrMissingId_dropsNothing() {
+        bolus.prepareWizard(uri("carbs=40"))
+        assertFalse(json(bolus.discard(uri("id=1")))["ok"].asBoolean)
+        assertFalse(json(bolus.discard(uri("")))["ok"].asBoolean)
+        verify(wizardExecutor, never()).discard(any())
+        verify(batchExecutor, never()).discard(any())
+    }
+
+    @Test
     fun commit_wrongOrMissingId_refused() {
         bolus.prepareWizard(uri("carbs=40"))
         assertFalse(json(bolus.commit(uri("id=1")))["ok"].asBoolean)
