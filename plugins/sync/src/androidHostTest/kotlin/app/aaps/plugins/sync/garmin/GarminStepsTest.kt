@@ -1,6 +1,6 @@
 package app.aaps.plugins.sync.garmin
 
-import app.aaps.core.interfaces.sharedPreferences.SP
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import app.aaps.shared.tests.TestBase
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -27,7 +27,7 @@ class GarminStepsTest : TestBase() {
 
     /** Backing store for [sp]: the last total and its time live in SharedPreferences. */
     private val store = mutableMapOf<String, Any>()
-    private val sp = mock<SP>()
+    private val sp = mock<KeyValueStore>()
     private val loopHub = mock<LoopHub>()
 
     private val t0 = Instant.parse("2026-10-01T12:00:00Z")

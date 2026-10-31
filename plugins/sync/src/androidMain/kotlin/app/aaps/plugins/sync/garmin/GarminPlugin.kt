@@ -23,7 +23,7 @@ import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
 import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.rx.collectResilient
-import app.aaps.core.interfaces.sharedPreferences.SP
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.compose.icons.IcPluginGarmin
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
@@ -83,7 +83,7 @@ class GarminPlugin(
     aapsLogger: AAPSLogger,
     rh: TextResolver,
     preferences: Preferences,
-    private val sp: SP,
+    private val sp: KeyValueStore,
     private val context: Context,
     private val loopHub: LoopHub,
     private val persistenceLayer: PersistenceLayer,

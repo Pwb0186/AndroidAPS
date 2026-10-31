@@ -3,7 +3,7 @@ package app.aaps.plugins.sync.garmin
 import androidx.annotation.VisibleForTesting
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.sharedPreferences.SP
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class GarminV2Push(
     private val aapsLogger: AAPSLogger,
-    private val sp: SP,
+    private val sp: KeyValueStore,
     private val nowMillis: () -> Long,
 ) {
     companion object {
