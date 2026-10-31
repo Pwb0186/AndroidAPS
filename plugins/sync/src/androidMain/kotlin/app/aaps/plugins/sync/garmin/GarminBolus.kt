@@ -115,6 +115,9 @@ class GarminBolus(
     private val lock = Any()
     private var prepared: Prepared? = null
 
+    /** The last id sent to AAPS: a second commit of it answers "unknown", not "nothing given". */
+    private var sentId: Long? = null
+
     fun prepareWizard(uri: URI): CharSequence {
         // Before AAPS reads BG, IOB and boluses: a bolus stored while it computes is newer than this.
         val startMs = now()
@@ -207,8 +210,13 @@ class GarminBolus(
     fun prepareTreatment(uri: URI): CharSequence {
         // Before AAPS reads BG, IOB and boluses: a bolus stored while it computes is newer than this.
         val startMs = now()
-        val insulin = uri.queryParameter("insulin")?.toDoubleOrNull()?.takeIf { it >= 0.0 } ?: 0.0
-        val carbs = uri.queryParameter("carbs")?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
+        // Missing is 0; anything sent that is not a plain amount ("1,5", "Infinity", -1) is refused,
+        // so a mistyped insulin can never turn into a carbs-only treatment.
+        val insulinText = uri.queryParameter("insulin")
+        val carbsText = uri.queryParameter("carbs")
+        val insulin = if (insulinText == null) 0.0 else insulinText.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0.0 }
+            ?: return error("Invalid insulin")
+        val carbs = if (carbsText == null) 0 else carbsText.toIntOrNull()?.takeIf { it >= 0 } ?: return error("Invalid carbs")
         if (insulin == 0.0 && carbs == 0) return error("Choose insulin or carbs")
         refusal()?.let { return error(it) }
         busy()?.let { return error(it) }
@@ -226,7 +234,7 @@ class GarminBolus(
         val id = uri.queryParameter("id")?.toLongOrNull() ?: return error("Missing id")
         // Taken out under the lock, so an id can only be given once.
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
-            ?: return error("Not prepared or already used")
+            ?: return if (synchronized(lock) { sentId == id }) unknown() else error("Not prepared or already used")
         refusal()?.let { return error(it) }
         if (now() - p.atMs > PREPARED_TTL_MS) return error("Expired, choose again")
         // A bolus still waiting or running (also an SMB) is not in the computed dose yet.
@@ -237,6 +245,7 @@ class GarminBolus(
                 .maxOfOrNull { it.timestamp }
         }
         if (newest != null && newest > p.atMs) return error("Another bolus was given, choose again")
+        synchronized(lock) { sentId = id }
         val progress = try {
             runBlocking {
                 if (p.byWizard) wizardExecutor.commit(id, asAdvisor = false, Sources.Garmin, wizardLabel())
@@ -292,7 +301,8 @@ class GarminBolus(
         // Lets the stop screen show how far the bolus has come. Only a bolus: an SMB or priming is not
         // what the screen waits for. Percent rather than the delivered amount, because some pumps only
         // report a percent; the watch works out the units from it.
-        bolusProgressData.state.value?.takeIf { !it.isSMB && !it.isPriming }?.let {
+        // Not after a stop: AAPS then marks the bolus 100 % of the full dose for a few seconds.
+        bolusProgressData.state.value?.takeIf { !it.isSMB && !it.isPriming && !it.stopPressed }?.let {
             addProperty("bolusPercent", it.percent.coerceIn(0, 100))
             addProperty("bolusInsulin", it.insulin)
         }

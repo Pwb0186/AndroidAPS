@@ -24,7 +24,9 @@ class GarminKeyGuard(private val now: () -> Long) {
     }
 
     private val lock = Any()
-    private var failures = 0
+    /** Times of wrong keys in the last [LOCKOUT_MS]. Not cleared by a right key, or a guessing app could
+     *  get [MAX_FAILURES] - 1 tries between each request of the watch. */
+    private val failures = ArrayDeque<Long>()
     private var lockedUntil = 0L
 
     fun check(expected: String, given: String?, allowWhileLocked: Boolean = false): Result = synchronized(lock) {
@@ -33,15 +35,14 @@ class GarminKeyGuard(private val now: () -> Long) {
         if (locked && !allowWhileLocked) return Result.LOCKED
         // Constant time, so the time of the answer tells nothing about how much of the key was right.
         val right = given != null && MessageDigest.isEqual(expected.toByteArray(), given.toByteArray())
-        if (right) {
-            if (!locked) failures = 0
-            return Result.OK
-        }
+        if (right) return Result.OK
         if (locked) return Result.LOCKED
-        failures++
-        if (failures >= MAX_FAILURES) {
-            failures = 0
-            lockedUntil = now() + LOCKOUT_MS
+        val t = now()
+        while (failures.isNotEmpty() && t - failures.first() >= LOCKOUT_MS) failures.removeFirst()
+        failures.addLast(t)
+        if (failures.size >= MAX_FAILURES) {
+            failures.clear()
+            lockedUntil = t + LOCKOUT_MS
             return Result.LOCKED_NOW
         }
         return Result.WRONG

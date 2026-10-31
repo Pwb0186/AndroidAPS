@@ -474,7 +474,15 @@ class GarminPluginTest : TestBaseWithProfile() {
     }
 
     @Test
+    fun testOnPostCarbs_switchOff_refused() {
+        val uri = createUri(mapOf("carbs" to "12"))
+        assertEquals("", gp.onPostCarbs(uri))
+        verify(loopHub, never()).postCarbs(any())
+    }
+
+    @Test
     fun testOnPostCarbs() {
+        whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(true)
         val uri = createUri(mapOf("carbs" to "12"))
         assertEquals("", gp.onPostCarbs(uri))
         verify(loopHub).postCarbs(12)

@@ -156,6 +156,32 @@ class GarminBolusTest : TestBaseWithProfile() {
     }
 
     @Test
+    fun commit_sentIdAgain_answersUnknown() {
+        // The first answer was lost on the way to the watch: the second must not say "nothing given".
+        bolus.prepareWizard(uri("carbs=40"))
+        bolus.commit(uri("id=$preparedId"))
+        val jo = json(bolus.commit(uri("id=$preparedId")))
+        assertTrue(jo["unknown"].asBoolean)
+        assertFalse(json(bolus.commit(uri("id=1")))["unknown"]?.asBoolean ?: false)
+    }
+
+    @Test
+    fun treatment_unreadableAmount_refused() {
+        assertFalse(json(bolus.prepareTreatment(uri("insulin=1,5&carbs=20")))["ok"].asBoolean)
+        assertFalse(json(bolus.prepareTreatment(uri("insulin=Infinity")))["ok"].asBoolean)
+        assertFalse(json(bolus.prepareTreatment(uri("insulin=1.0&carbs=x")))["ok"].asBoolean)
+        runBlocking { verify(batchExecutor, never()).prepare(any(), any(), any()) }
+    }
+
+    @Test
+    fun status_stoppedBolus_noProgress() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        bolusProgressData.start(insulin = 4.0, isSMB = false)
+        bolusProgressData.stopPressed()
+        assertFalse(json(bolus.status(ttActive = false).toString()).has("bolusPercent"))
+    }
+
+    @Test
     fun commit_wizardDoseGivenOnce() {
         bolus.prepareWizard(uri("carbs=40"))
         assertTrue(json(bolus.commit(uri("id=$preparedId")))["ok"].asBoolean)

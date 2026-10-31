@@ -40,11 +40,11 @@ Therefore:
 - **Request Key** (the existing AAPS key) opens no commands. AAPS sends it in its push
   messages to every watch app that has called `/get`, so it must not be trusted.
 - Reading (`/get`, `/sgv.json`) needs no key.
-- Wrong control key 5 times (in total, from any app): the watch commands are locked for
-  15 minutes.
+- Wrong control key 5 times within 15 minutes (from any app; a right key in between does not
+  reset the count): the watch commands are locked for 15 minutes.
 - While locked, every command is refused (HTTP 429), even with the right key.
-- Except stop bolus: it is never locked. With the right key you can always stop a running
-  bolus from the watch.
+- Except stop bolus and `/status`: they are never locked. With the right key you can always
+  stop a running bolus from the watch and see how far it has come.
 - A bolus is refused while another bolus or SMB is queued or running, and at commit when a
   bolus or SMB was stored after AAPS began computing the prepared dose.
 - Bolus commands are refused on AAPSClient.
@@ -55,7 +55,7 @@ All need `key=<control key>`. Answers are JSON.
 
 | Endpoint | What it does | Needs the switch |
 |---|---|---|
-| `/status` | `bolusRunning`, `ttActive`, `qwCount`, `sceneActive`, `sceneName`, `sceneCount`, `bolusEnabled`, `carbsEnabled`, `maxBolus`, `maxCarbs`, `bolusStep`, `wizardPercent`, `units` | no |
+| `/status` | `bolusRunning`, `ttActive`, `qwCount`, `sceneActive`, `sceneName`, `sceneCount`, `bolusEnabled`, `carbsEnabled`, `maxBolus`, `maxCarbs`, `bolusStep`, `wizardPercent`, `units`, and while a bolus runs `bolusPercent` and `bolusInsulin` (not after it was stopped) | no |
 | `/tt/prepare?preset=activity\|eating\|hypo\|cancel` | temp target from the AAPS presets; cancel only when one is running | no |
 | `/tt/prepare?preset=manual&target=X&duration=N` | manual temp target in the AAPS unit (mmol/L with a dot, or mg/dL), within the AAPS limits, 5-720 min | no |
 | `/tt/commit?id=` | sets it | no |
@@ -68,13 +68,16 @@ All need `key=<control key>`. Answers are JSON.
 | `/treatment/prepare?insulin=X.XX&carbs=N` | insulin and/or carbs as chosen | yes |
 | `/bolus/commit?id=` | gives the prepared bolus, Quick Wizard or treatment | yes |
 | `/bolus/stop` | stops a queued or running bolus | no |
-| `/carbs`, `/connect` | unchanged from AAPS, but need the control key | no |
+| `/carbs` | unchanged from AAPS, but needs the control key | yes |
+| `/connect` | unchanged from AAPS, but needs the control key | no |
 
 Prepare answers: `{"ok":true,"id":"<id>","lines":[...],"insulin":<U>}` (`insulin` is left
-out when unknown). Commit answers: `{"ok":true,"text":"OK"}`, a refusal
+out when unknown). Commit answers: `{"ok":true,"text":"OK"}` (for a bolus: queued in AAPS), a refusal
 `{"ok":false,"error":"..."}`, or, when AAPS does not know whether it was done,
 `{"ok":false,"error":"Unknown - do NOT repeat, check AAPS","unknown":true}`. The watch
-must never repeat a command after an unknown answer, and the user must check AAPS.
+must never repeat a command after an unknown answer, and the user must check AAPS. A second
+commit of an id that was already sent also answers unknown, and so does a scene that may have
+started only partly.
 
 ## Not included
 - Insulin from the watch without a confirmation, or a dose correction on the watch.
