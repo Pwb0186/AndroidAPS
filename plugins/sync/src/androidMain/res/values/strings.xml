@@ -235,7 +235,10 @@
 
     <string name="wear_action_running_mode_title">Running mode</string>
 
+    <string name="garmin_command_key">Garmin watch control key (at least 8 characters)</string>
+    <string name="garmin_command_key_summary">Unlocks temp targets and scenes from the watch; carbs and bolus also need the switch below. Never sent to the watch: type the same key into the watch app.</string>
     <string name="garmin_request_key">Request Key</string>
+    <string name="garmin_bolus_from_watch">Allow carbs and bolus from Garmin watch</string>
 
     <!-- SMS Communicator & OTP Authenticator -->
 

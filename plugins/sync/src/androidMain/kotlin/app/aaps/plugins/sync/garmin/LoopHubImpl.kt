@@ -6,11 +6,13 @@ import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.HR
 import app.aaps.core.data.model.RM
 import app.aaps.core.data.model.SC
+import app.aaps.core.data.model.TE
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.bolus.MasterActionExecutor
+import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
@@ -18,10 +20,12 @@ import app.aaps.core.interfaces.di.ApplicationScope
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.interfaces.queue.CommandQueue
+import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
@@ -46,6 +50,8 @@ import java.time.Instant
 @Inject
 class LoopHubImpl(
     private val aapsLogger: AAPSLogger,
+    private val activePlugin: ActivePlugin,
+    private val config: Config,
     private val commandQueue: CommandQueue,
     private val constraintChecker: ConstraintsChecker,
     private val iobCobCalculator: IobCobCalculator,
@@ -122,6 +128,44 @@ class LoopHubImpl(
 
     override val temporaryTarget
         get() = runBlocking { persistenceLayer.getTemporaryTargetActiveAt(clock.millis()) }
+
+    override val pumpStatus: PumpStatus
+        get() {
+            val reservoir = reservoirU100()
+            val reservoirLevel = when {
+                reservoir == null                                          -> 0
+                reservoir <= preferences.get(IntKey.OverviewResCritical) -> 2
+                reservoir <= preferences.get(IntKey.OverviewResWarning)  -> 1
+                else                                                       -> 0
+            }
+            val cannulaChange = runBlocking { persistenceLayer.getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE) }
+            return PumpStatus(
+                reservoir = reservoir,
+                reservoirLevel = reservoirLevel,
+                cannulaChange = cannulaChange?.let { Instant.ofEpochMilli(it.timestamp) },
+                cannulaWarnHours = preferences.get(IntKey.OverviewCageWarning),
+                cannulaCritHours = preferences.get(IntKey.OverviewCageCritical),
+            )
+        }
+
+    // Same rules as the AAPS overview and the Wear status, so the watch never warns where
+    // AAPS does not.
+    private fun reservoirU100(): Double? {
+        // On AAPSClient the active pump is a virtual pump with a made-up reservoir.
+        if (config.AAPSCLIENT) return null
+        // Without a profile there is no concentration to convert with.
+        val concentration = currentProfile?.iCfg?.concentration ?: return null
+        val pump = activePlugin.activePump
+        val reservoir = pump.reservoirLevel.value.iU(concentration)
+        val description = pump.pumpDescription
+        return when {
+            // 0 is what pumps report before the first reading; AAPS shows it as unknown too.
+            reservoir <= 0.0                                                            -> null
+            // Otherwise an Omnipod at "50+" would always be below the 80 U default warning.
+            description.isPatchPump && reservoir >= description.maxReservoirReading -> null
+            else                                                                         -> reservoir
+        }
+    }
 
     /** Tells the loop algorithm that the pump is physically connected. */
     override fun connectPump() {
