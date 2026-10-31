@@ -59,6 +59,7 @@ class GarminTempTarget(
 
     private val lock = Any()
     private var prepared: Prepared? = null
+    private var sentId: Long? = null
 
     fun prepare(uri: URI): CharSequence {
         val preset = uri.queryParameter("preset")
@@ -100,8 +101,10 @@ class GarminTempTarget(
         val id = uri.queryParameter("id")?.toLongOrNull() ?: return error("Missing id")
         // Taken out under the lock, so an id can only be committed once.
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
-            ?: return error("Not prepared or already used")
+            ?: return if (synchronized(lock) { sentId == id }) unknown() else error("Not prepared or already used")
         if (now() - p.atMs > PREPARED_TTL_MS) return error("Expired, choose again")
+        // A second commit of this id (an answer lost on the way to the watch) must not read as "nothing done".
+        synchronized(lock) { sentId = id }
         val progress = try {
             runBlocking { batchExecutor.commit(id, Sources.Garmin, label()) }
         } catch (e: Exception) {
