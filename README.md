@@ -70,6 +70,7 @@ All need `key=<control key>`. Answers are JSON.
 | `/wizard/prepare?carbs=N&type=bread\|cake\|pizza&carbTime=M&percent=P` | bolus wizard with the Wear wizard settings; meal type splits the carbs like the AAPS bolus wizard; carb time -60..60 min (default 0), percentage 10..200 (default from AAPS) | yes |
 | `/treatment/prepare?insulin=X.XX&carbs=N` | insulin and/or carbs as chosen | yes |
 | `/bolus/commit?id=` | gives the prepared bolus, Quick Wizard or treatment | yes |
+| `/bolus/discard?id=` | drops a prepared dose that will not be given (BACK or time ran out on the watch), so the loop gives SMBs again at once instead of after AAPS' pause. Not on the rc1 branch; the watch ignores the answer | no |
 | `/bolus/stop` | stops a queued or running bolus | no |
 | `/carbs`, `/connect` | unchanged from AAPS, but need the control key | no |
 
