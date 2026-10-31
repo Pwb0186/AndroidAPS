@@ -3,7 +3,7 @@ package app.aaps.plugins.sync.garmin
 import androidx.annotation.VisibleForTesting
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.sharedPreferences.SP
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import java.net.URI
 import java.time.Clock
 import java.time.Instant
@@ -29,7 +29,7 @@ import kotlin.math.roundToInt
  */
 class GarminSteps(
     private val aapsLogger: AAPSLogger,
-    private val sp: SP,
+    private val sp: KeyValueStore,
     private val loopHub: LoopHub,
     private val clock: () -> Clock,
     private val zone: () -> ZoneId = { ZoneId.systemDefault() },

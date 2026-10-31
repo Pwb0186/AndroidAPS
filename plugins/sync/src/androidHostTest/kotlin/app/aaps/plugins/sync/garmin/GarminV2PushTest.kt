@@ -1,6 +1,6 @@
 package app.aaps.plugins.sync.garmin
 
-import app.aaps.core.interfaces.sharedPreferences.SP
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import app.aaps.shared.tests.TestBase
 import com.google.common.truth.Truth
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -16,7 +16,7 @@ import org.mockito.kotlin.whenever
 class GarminV2PushTest : TestBase() {
 
     private val store = mutableMapOf<String, String>()
-    private val sp = mock<SP>()
+    private val sp = mock<KeyValueStore>()
     private var now = 1_000_000_000L
 
     private fun newPush() = GarminV2Push(aapsLogger, sp) { now }
@@ -63,7 +63,7 @@ class GarminV2PushTest : TestBase() {
     @Test
     fun registryPersistsAcrossInstances() {
         newPush().registerOrTouchDynamicApp(appId(1))
-        // E.g. after an AAPS restart: the registry is read back from SP.
+        // E.g. after an AAPS restart: the registry is read back from the store.
         assertEquals(setOf(appId(1)), newPush().getActiveV2AppIds())
     }
 
