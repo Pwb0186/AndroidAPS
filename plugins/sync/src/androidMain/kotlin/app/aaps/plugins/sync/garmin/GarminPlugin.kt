@@ -116,6 +116,9 @@ class GarminPlugin(
     @VisibleForTesting
     val garminTempTarget = GarminTempTarget(aapsLogger, preferences, resourceHelper, batchExecutor, { loopHub.temporaryTarget }, { loopHub.glucoseUnit }) { clock.millis() }
 
+    /** Experimental G7 pairing from the watch (G7direct), see GarminG7Pairing.kt. */
+    private val garminG7Pairing = GarminG7Pairing(aapsLogger)
+
     companion object {
         // The AAPS key in a logged request (?key=... / &key=...).
         private val KEY_IN_QUERY = Regex("(?<=[?&])key=[^&]+")
@@ -318,6 +321,14 @@ class GarminPlugin(
                     }.toString()
                 // Only reads: the stop screen keeps its progress while wrong keys block the commands.
                 }, keyRequired = true, allowWhileLocked = true))
+                // G7 pairing from the watch (G7direct). No key: these endpoints change no
+                // treatment and hold no secret of the phone - the sensor key comes from the
+                // code the caller sends, and Dexcom's certificates are public protocol data.
+                // Quiet: the requests carry the pairing code, the answers the sensor key.
+                registerEndpoint("/g7pair/start", requestHandler(garminG7Pairing::start, quiet = true))
+                registerEndpoint("/g7pair/round3", requestHandler(garminG7Pairing::round3, quiet = true))
+                registerEndpoint("/g7pair/sign", requestHandler(garminG7Pairing::sign, quiet = true))
+                registerEndpoint("/g7pair/cancel", requestHandler(garminG7Pairing::cancel, quiet = true))
                 awaitReady(wait)
             }
         } else if (server != null) {
@@ -453,7 +464,7 @@ class GarminPlugin(
     }
 
     @VisibleForTesting
-    fun requestHandler(action: (URI) -> CharSequence, keyRequired: Boolean = false, allowWhileLocked: Boolean = false) = { caller: SocketAddress, uri: URI, _: String? ->
+    fun requestHandler(action: (URI) -> CharSequence, keyRequired: Boolean = false, allowWhileLocked: Boolean = false, quiet: Boolean = false) = { caller: SocketAddress, uri: URI, _: String? ->
         // Reading (/get, /sgv.json) is open: any app on the phone could read the same values
         // elsewhere, and the watch faces and data fields then need no key. Everything that
         // changes treatment (/carbs, /connect, temp target, bolus, scenes) needs the command key,
@@ -483,9 +494,15 @@ class GarminPlugin(
             }
 
             GarminKeyGuard.Result.OK         -> {
-                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}")
-                HttpURLConnection.HTTP_OK to action(uri).also {
-                    aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}, result: $it")
+                if (quiet) {
+                    // Path only: the query and the answer must not reach the log.
+                    aapsLogger.info(LTag.GARMIN, "get from $caller ${uri.path}")
+                    HttpURLConnection.HTTP_OK to action(uri)
+                } else {
+                    aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}")
+                    HttpURLConnection.HTTP_OK to action(uri).also {
+                        aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}, result: $it")
+                    }
                 }
             }
         }

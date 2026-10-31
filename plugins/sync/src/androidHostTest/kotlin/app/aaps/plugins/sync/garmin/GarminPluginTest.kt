@@ -212,6 +212,27 @@ class GarminPluginTest : TestBaseWithProfile() {
     }
 
     @Test
+    // G7 pairing from the watch needs no key, also when no command key is set, while the
+    // commands still do.
+    fun setupHttpServer_g7PairWithoutKey(): Unit = runBlocking {
+        whenever(preferences.get(GarminBooleanKey.LocalHttpServer)).thenReturn(true)
+        whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28894)
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("")
+        gp.setupHttpServer(Duration.ofSeconds(10))
+
+        val start = URI("http://127.0.0.1:28894/g7pair/start?code=1155").toURL().openConnection() as HttpURLConnection
+        assertEquals(200, start.responseCode)
+        Truth.assertThat(start.inputStream.bufferedReader().readText()).contains("\"ok\":true")
+
+        val cancel = URI("http://127.0.0.1:28894/g7pair/cancel").toURL().openConnection() as HttpURLConnection
+        assertEquals(200, cancel.responseCode)
+
+        val carbs = URI("http://127.0.0.1:28894/carbs?carbs=10").toURL().openConnection() as HttpURLConnection
+        assertEquals(HttpURLConnection.HTTP_FORBIDDEN, carbs.responseCode)
+        gp.onStop()
+    }
+
+    @Test
     fun setupHttpServer_disabled() {
         gp.setupHttpServer(Duration.ofSeconds(10))
         val reqUri = URI("http://127.0.0.1:28890/get")
