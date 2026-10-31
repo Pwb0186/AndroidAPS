@@ -50,6 +50,10 @@ interface LoopHub {
     /** Returns the currently active temporary target, if any. */
     val temporaryTarget: TT?
 
+    /** Reservoir and cannula/pod age with AAPS' own status light thresholds,
+     *  so the watch warns at the same points as the AAPS overview. */
+    val pumpStatus: PumpStatus?
+
     /** Tells the loop algorithm that the pump is physically connected. */
     fun connectPump()
 
@@ -83,3 +87,15 @@ interface LoopHub {
         device: String?
     )
 }
+
+data class PumpStatus(
+    /** Units (U100). Null when unknown, and for a patch pump at its max reading,
+     *  which only means "at least this much" (Omnipod shows 50+). */
+    val reservoir: Double?,
+    /** 0 = ok, 1 = warning, 2 = critical. */
+    val reservoirLevel: Int,
+    /** Last cannula change; for patch pumps this is the pod/patch change. */
+    val cannulaChange: Instant?,
+    val cannulaWarnHours: Int,
+    val cannulaCritHours: Int,
+)

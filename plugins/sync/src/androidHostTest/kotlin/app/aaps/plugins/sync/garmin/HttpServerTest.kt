@@ -2,9 +2,11 @@ package app.aaps.plugins.sync.garmin
 
 import app.aaps.shared.tests.TestBase
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.SocketAddress
@@ -69,6 +71,19 @@ internal class HttpServerTest: TestBase() {
         assertEquals(
             URI("http://foo?a=1") to null,
             HttpServer.parseRequest(toInputStream(req)))
+    }
+
+    @Test fun testParseRequest_TooLong_Refused() {
+        assertThrows(IOException::class.java) {
+            HttpServer.parseRequest(toInputStream("GET http://foo?k=" + "a".repeat(9000) + " HTTP/1.1\n\n"))
+        }
+        val headers = (1..60).joinToString("\n") { "X-H: $it" }
+        assertThrows(IOException::class.java) {
+            HttpServer.parseRequest(toInputStream("GET http://foo HTTP/1.1\n$headers\n\n"))
+        }
+        assertThrows(IOException::class.java) {
+            HttpServer.parseRequest(toInputStream("POST http://foo HTTP/1.1\nContent-Length: ${HttpServer.MAX_BODY + 1}\n\nx"))
+        }
     }
 
     @Test fun testRequest() {
