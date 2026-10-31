@@ -120,7 +120,7 @@ class GarminPlugin(
 
     /** Temp target from the watch (/tt/prepare, /tt/commit). See GarminTempTarget.kt. */
     @VisibleForTesting
-    val garminTempTarget = GarminTempTarget(aapsLogger, preferences, resourceHelper, batchExecutor, { loopHub.temporaryTarget }, { loopHub.glucoseUnit }) { clock.millis() }
+    val garminTempTarget = GarminTempTarget(aapsLogger, preferences, rh, batchExecutor, { loopHub.temporaryTarget }, { loopHub.glucoseUnit }) { clock.millis() }
 
     companion object {
         // The AAPS key in a logged request (?key=... / &key=...).
