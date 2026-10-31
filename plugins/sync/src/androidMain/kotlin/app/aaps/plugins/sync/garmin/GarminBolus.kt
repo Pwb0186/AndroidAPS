@@ -227,16 +227,16 @@ class GarminBolus(
         // Taken out under the lock, so an id can only be given once.
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
             ?: return error("Not prepared or already used")
-        refusal()?.let { return error(it) }
-        if (now() - p.atMs > PREPARED_TTL_MS) return error("Expired, choose again")
+        refusal()?.let { return dropped(p, it) }
+        if (now() - p.atMs > PREPARED_TTL_MS) return dropped(p, "Expired, choose again")
         // A bolus still waiting or running (also an SMB) is not in the computed dose yet.
-        busy()?.let { return error(it) }
+        busy()?.let { return dropped(p, it) }
         // A bolus given after the dose was computed (from the phone, another watch or an SMB) is not in it.
         val newest = runBlocking {
             listOfNotNull(persistenceLayer.getNewestBolusOfType(BS.Type.NORMAL), persistenceLayer.getNewestBolusOfType(BS.Type.SMB))
                 .maxOfOrNull { it.timestamp }
         }
-        if (newest != null && newest > p.atMs) return error("Another bolus was given, choose again")
+        if (newest != null && newest > p.atMs) return dropped(p, "Another bolus was given, choose again")
         val progress = try {
             runBlocking {
                 if (p.byWizard) wizardExecutor.commit(id, asAdvisor = false, Sources.Garmin, wizardLabel())
@@ -255,6 +255,31 @@ class GarminBolus(
             addProperty("ok", true)
             addProperty("text", "OK")
         }.toString()
+    }
+
+    /**
+     * The watch left the confirmation without giving the dose (BACK or its time ran out). AAPS stops SMBs
+     * from the moment a dose is prepared until it is given or dropped, and otherwise only lets them go
+     * again when that pause runs out by itself, so dropping it here gives the loop its SMBs back at once.
+     * Nothing is given, so no setting is checked; an unknown or used id has nothing to drop.
+     */
+    fun discard(uri: URI): CharSequence {
+        val id = uri.queryParameter("id")?.toLongOrNull() ?: return error("Missing id")
+        val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
+            ?: return error("Not prepared or already used")
+        drop(p)
+        return JsonObject().apply { addProperty("ok", true) }.toString()
+    }
+
+    /** Drops a parked dose in AAPS that will not be given, then refuses with [text]. */
+    private fun dropped(p: Prepared, text: String): CharSequence {
+        drop(p)
+        return error(text)
+    }
+
+    private fun drop(p: Prepared) {
+        if (p.byWizard) wizardExecutor.discard(p.id) else batchExecutor.discard(p.id)
+        aapsLogger.info(LTag.GARMIN, "bolus id ${p.id} discarded")
     }
 
     /** Stops a bolus that is queued or running. Only the key is needed: stopping is a safety action. */
