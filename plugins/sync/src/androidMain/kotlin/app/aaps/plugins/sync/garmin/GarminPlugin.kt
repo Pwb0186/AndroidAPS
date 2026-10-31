@@ -323,7 +323,8 @@ class GarminPlugin(
                         // The unit the watch shows and sends a manual temp target in.
                         it.addProperty("units", if (loopHub.glucoseUnit == GlucoseUnit.MGDL) "mgdl" else "mmol")
                     }.toString()
-                }, keyRequired = true))
+                // Only reads: the stop screen keeps its progress while wrong keys block the commands.
+                }, keyRequired = true, allowWhileLocked = true))
                 awaitReady(wait)
             }
         } else if (server != null) {
@@ -636,6 +637,11 @@ class GarminPlugin(
     /** Handles carb notification from the device. */
     @VisibleForTesting
     fun onPostCarbs(uri: URI): CharSequence {
+        // Carbs make the loop give insulin, so they need the same switch as a bolus from the watch.
+        if (!preferences.get(GarminBooleanKey.BolusFromWatch)) {
+            aapsLogger.warn(LTag.GARMIN, "carbs from the watch refused: not allowed in the Garmin settings")
+            return ""
+        }
         postCarbs(getQueryParameter(uri, "carbs", 0L).toInt())
         return ""
     }

@@ -2,6 +2,7 @@ package app.aaps.plugins.sync.garmin
 
 import androidx.annotation.VisibleForTesting
 import app.aaps.core.interfaces.clientcontrol.ActionProgress
+import app.aaps.core.interfaces.clientcontrol.FailureReason
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.resources.ResourceHelper
@@ -52,6 +53,7 @@ class GarminScene(
 
     private val lock = Any()
     private var prepared: Prepared? = null
+    private var sentId: Long? = null
 
     /** The scenes that can be started (disabled ones are hidden in AAPS too). */
     fun list(uri: URI): CharSequence {
@@ -87,8 +89,10 @@ class GarminScene(
         val id = uri.queryParameter("id")?.toLongOrNull() ?: return error("Missing id")
         // Taken out under the lock, so an id can only be committed once.
         val p = synchronized(lock) { prepared?.takeIf { it.id == id }?.also { prepared = null } }
-            ?: return error("Not prepared or already used")
+            ?: return if (synchronized(lock) { sentId == id }) unknown() else error("Not prepared or already used")
         if (now() - p.atMs > PREPARED_TTL_MS) return error("Expired, choose again")
+        // A second commit of this id (an answer lost on the way to the watch) must not read as "nothing done".
+        synchronized(lock) { sentId = id }
         val progress = try {
             runBlocking { sceneActions.commitStart(id) }
         } catch (e: Exception) {
@@ -97,7 +101,9 @@ class GarminScene(
             return unknown()
         }
         aapsLogger.info(LTag.GARMIN, "scene id $id committed: $progress")
-        // Only a refusal proves that nothing was started.
+        // Only a refusal proves that nothing was started. ExecutionFailed can come after some of the
+        // scene's actions were applied, so it may have partly started.
+        if (progress is ActionProgress.Rejected && progress.reason == FailureReason.ExecutionFailed) return unknown()
         if (progress is ActionProgress.Rejected) return error(failure(progress))
         if (progress !is ActionProgress.Applied) return unknown()
         return ok("OK")
