@@ -478,7 +478,15 @@ class GarminPluginTest : TestBaseWithProfile() {
     }
 
     @Test
+    fun testOnPostCarbs_switchOff_refused() {
+        val uri = createUri(mapOf("carbs" to "12"))
+        assertEquals("", gp.onPostCarbs(uri))
+        verify(loopHub, never()).postCarbs(any())
+    }
+
+    @Test
     fun testOnPostCarbs() {
+        whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(true)
         val uri = createUri(mapOf("carbs" to "12"))
         assertEquals("", gp.onPostCarbs(uri))
         verify(loopHub).postCarbs(12)
@@ -518,6 +526,7 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @Test
     fun testOnPostCarbs_OnClient() {
+        whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(true)
         val uri = createUri(mapOf("carbs" to "12"))
         assertEquals("", clientPlugin().onPostCarbs(uri))
         assertEquals("The Garmin watch sent 12 g of carbs. This phone is a client, so they were not entered. Enter them in AAPS.", postedNotice())

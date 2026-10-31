@@ -18,14 +18,20 @@ class GarminKeyGuardTest {
     }
 
     @Test
-    fun wrongKeys_lockAfterMax_rightKeyResetsCount() {
+    fun wrongKeys_lockAfterMax_rightKeyDoesNotResetCount() {
         repeat(GarminKeyGuard.MAX_FAILURES - 1) { assertEquals(Result.WRONG, guard.check(key, "x")) }
         assertEquals(Result.OK, guard.check(key, key))
-        // The count started again after the right key.
-        repeat(GarminKeyGuard.MAX_FAILURES - 1) { assertEquals(Result.WRONG, guard.check(key, null)) }
-        assertEquals(Result.LOCKED_NOW, guard.check(key, "x"))
+        // The right key in between does not give a guessing app new tries.
+        assertEquals(Result.LOCKED_NOW, guard.check(key, null))
         assertEquals(Result.LOCKED, guard.check(key, key))
         assertEquals(Result.LOCKED, guard.check(key, "x"))
+    }
+
+    @Test
+    fun wrongKeys_olderThanLockout_areForgotten() {
+        repeat(GarminKeyGuard.MAX_FAILURES - 1) { guard.check(key, "x") }
+        nowMs += GarminKeyGuard.LOCKOUT_MS
+        assertEquals(Result.WRONG, guard.check(key, "x"))
     }
 
     @Test
