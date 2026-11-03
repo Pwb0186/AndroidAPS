@@ -35,18 +35,18 @@ Everything goes through the same AAPS code as the Wear watch (`BatchExecutor`,
 The HTTP server only listens on `127.0.0.1`, but any app on the phone can call it.
 Therefore:
 
-- **Garmin watch control key** (new setting, at least 8 characters): needed for every
+- **Garmin remote control PIN** (new setting, 8 to 16 digits): needed for every
   command, also `/carbs` and `/connect`. It is never sent to a watch; you type the same
-  key into the watch app. Setting it unlocks temp targets and scenes.
+  PIN into the watch app, under **Remote PIN**. Setting it unlocks temp targets and scenes.
 - **Allow carbs and bolus from Garmin watch** (off by default, can only be turned on when a
-  control key is set): also needed for Quick Wizard, bolus wizard, treatment and carbs.
+  remote control PIN is set): also needed for Quick Wizard, bolus wizard, treatment and carbs.
 - **Request Key** (the existing AAPS key) opens no commands. AAPS sends it in its push
   messages to every watch app that has called `/get`, so it must not be trusted.
 - Reading (`/get`, `/sgv.json`) needs no key.
-- Wrong control key 5 times within 15 minutes (from any app; a right key in between does not
+- Wrong PIN 5 times within 15 minutes (from any app; a right PIN in between does not
   reset the count): the watch commands are locked for 15 minutes.
-- While locked, every command is refused (HTTP 429), even with the right key.
-- Except stop bolus and `/status`: they are never locked. With the right key you can always
+- While locked, every command is refused (HTTP 429), even with the right PIN.
+- Except stop bolus and `/status`: they are never locked. With the right PIN you can always
   stop a running bolus from the watch and see how far it has come.
 - A bolus is refused while another bolus or SMB is queued or running, and at commit when a
   bolus or SMB was stored after AAPS began computing the prepared dose.
@@ -54,7 +54,7 @@ Therefore:
 - Requests with a line over 8 KB, more than 50 headers or a body over 16 KB are refused.
 
 ## Endpoints
-All need `key=<control key>`. Answers are JSON.
+All need `key=<remote control PIN>`. Answers are JSON.
 
 | Endpoint | What it does | Needs the switch |
 |---|---|---|
@@ -72,8 +72,8 @@ All need `key=<control key>`. Answers are JSON.
 | `/bolus/commit?id=` | gives the prepared bolus, Quick Wizard or treatment | yes |
 | `/bolus/discard?id=` | drops a prepared dose that will not be given (BACK or time ran out on the watch), so the loop gives SMBs again at once instead of after AAPS' pause. Not on the rc1 branch; the watch ignores the answer | no |
 | `/bolus/stop` | stops a queued or running bolus | no |
-| `/carbs` | unchanged from AAPS, but needs the control key | yes |
-| `/connect` | unchanged from AAPS, but needs the control key | no |
+| `/carbs` | unchanged from AAPS, but needs the remote control PIN | yes |
+| `/connect` | unchanged from AAPS, but needs the remote control PIN | no |
 
 Prepare answers: `{"ok":true,"id":"<id>","lines":[...],"insulin":<U>}` (`insulin` is left
 out when unknown). Commit answers: `{"ok":true,"text":"OK"}` (for a bolus: queued in AAPS), a refusal

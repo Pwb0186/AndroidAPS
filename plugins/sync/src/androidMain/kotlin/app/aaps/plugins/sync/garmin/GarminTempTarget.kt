@@ -31,7 +31,7 @@ import java.net.URI
  * applies the parked temp target, once.
  *
  * The endpoints are on localhost, where any app on the phone can call them. The request handler
- * therefore only lets them through with the watch control key, which is off until the user sets one;
+ * therefore only lets them through with the remote control PIN, which is off until the user sets one;
  * a temp target needs no switch of its own. The presets come from the AAPS temp target settings, a
  * manual target is limited like in AAPS, and only the newest id is accepted, for [PREPARED_TTL_MS].
  */
