@@ -131,6 +131,9 @@ class GarminBolus(
         val carbTime = uri.queryParameter("carbTime")?.let { it.toIntOrNull()?.takeIf { m -> m in -60..60 } ?: return error("Carb time must be -60 to 60 min") } ?: 0
         val percentage = uri.queryParameter("percent")?.let { it.toIntOrNull()?.takeIf { p -> p in 10..200 } ?: return error("Percentage must be 10 to 200") }
             ?: preferences.get(IntKey.OverviewBolusPercentage)
+        // A reminder to eat only makes sense when the carbs come later. AAPS checks this too; here it is visible.
+        // A missing parameter means no alarm, so older watch apps work as before.
+        val alarm = uri.queryParameter("alarm") == "1" && carbTime > 0
         val bg = iobCobCalculator.ads.actualBg() ?: return error(rh.gs(CoreUiStrings.wizard_no_actual_bg))
         // Split as the AAPS bolus wizard does: part of the carbs now, part as eCarbs later.
         val eCarbs = carbs * meal.eCarbsPercent / 100
@@ -146,7 +149,7 @@ class GarminBolus(
             useIob = preferences.get(BooleanKey.WearWizardIob),
             useTt = preferences.get(BooleanKey.WearWizardTt),
             useTrend = preferences.get(BooleanKey.WearWizardTrend),
-            alarm = false,
+            alarm = alarm,
             notes = "",
             eCarbsGrams = eCarbs,
             // The eCarbs start after the meal, so they move with the carb time, as in the AAPS bolus wizard.
@@ -155,7 +158,7 @@ class GarminBolus(
             source = Sources.Garmin
         )
         val progress = runBlocking { wizardExecutor.prepare(WizardExecutor.WizardSource.Manual(inputs), wizardLabel()) }
-        return park(progress, startMs, byWizard = true, what = "wizard $carbs g ${meal.param} $carbTime min $percentage %", insulin = wizardInsulin(progress))
+        return park(progress, startMs, byWizard = true, what = "wizard $carbs g ${meal.param} $carbTime min $percentage % alarm $alarm", insulin = wizardInsulin(progress))
     }
 
     /** The Quick Wizard buttons set to show on the watch whose time window is now. */

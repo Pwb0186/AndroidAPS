@@ -156,7 +156,7 @@ All need `key=<remote control PIN>`. Answers are JSON.
 | `/scene/stop` | ends the running scene, without starting a follow-up scene | no |
 | `/qw/list` | Quick Wizard buttons for the watch, in their time window, not in their 30 min cooldown | yes |
 | `/qw/prepare?guid=` | insulin and carbs buttons as they are (with eCarbs), wizard buttons computed by AAPS | yes |
-| `/wizard/prepare?carbs=N&type=bread\|cake\|pizza&carbTime=M&percent=P` | bolus wizard with the Wear wizard settings; meal type splits the carbs like the AAPS bolus wizard; carb time -60..60 min (default 0), percentage 10..200 (default from AAPS) | yes |
+| `/wizard/prepare?carbs=N&type=bread\|cake\|pizza&carbTime=M&percent=P&alarm=1` | bolus wizard with the Wear wizard settings; meal type splits the carbs like the AAPS bolus wizard; carb time -60..60 min (default 0), percentage 10..200 (default from AAPS). alarm=1 asks AAPS for a reminder to eat when carbTime is above 0. | yes |
 | `/treatment/prepare?insulin=X.XX&carbs=N` | insulin and/or carbs as chosen | yes |
 | `/bolus/commit?id=` | gives the prepared bolus, Quick Wizard or treatment | yes |
 | `/bolus/discard?id=` | drops a waiting dose that will not be given (BACK, or the time ran out on the watch). Then the loop can give SMBs again at once. The watch ignores the answer; older builds answer 404 | no |
