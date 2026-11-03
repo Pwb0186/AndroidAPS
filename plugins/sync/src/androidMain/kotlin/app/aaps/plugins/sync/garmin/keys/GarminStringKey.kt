@@ -17,12 +17,11 @@ enum class GarminStringKey(
 
     RequestKey(key = "garmin_aaps_key", defaultValue = "", title = SyncStrings.garmin_request_key),
     // Commands (temp target, bolus, scenes, carbs, pump disconnect) need this remote control PIN, which AAPS never
-    // sends to a watch. Empty or shorter than 8 characters: commands are refused.
-    // Only 8-16 digits are accepted, because that is all the watch app can type in.
+    // sends to a watch. Shown as a PIN so the phone offers a number keyboard; anything but 8-16 digits
+    // counts as not set (see GarminKeyGuard), because the PIN dialog does not use a validator.
     CommandKey(
         key = "garmin_command_key", defaultValue = "", title = SyncStrings.garmin_command_key,
-        summary = SyncStrings.garmin_command_key_summary, isPassword = true,
-        validator = StringValidator.regex("^[0-9]{8,16}$", "Digits only, 8–16")
+        summary = SyncStrings.garmin_command_key_summary, isPin = true
     ),
     ;
 

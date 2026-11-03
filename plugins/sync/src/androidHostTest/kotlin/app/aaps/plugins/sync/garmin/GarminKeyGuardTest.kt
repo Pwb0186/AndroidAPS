@@ -8,13 +8,16 @@ class GarminKeyGuardTest {
 
     private var nowMs = 1_000_000L
     private val guard = GarminKeyGuard { nowMs }
-    private val key = "commandkey"
+    private val key = "12345678"
 
     @Test
-    fun emptyOrShortKey_isNoKey() {
+    fun onlyEightToSixteenDigits_isAPin() {
         assertEquals(Result.NO_KEY, guard.check("", ""))
         assertEquals(Result.NO_KEY, guard.check("1234567", "1234567"))
+        assertEquals(Result.NO_KEY, guard.check("qwertyui", "qwertyui"))
+        assertEquals(Result.NO_KEY, guard.check("12345678901234567", "12345678901234567"))
         assertEquals(Result.OK, guard.check("12345678", "12345678"))
+        assertEquals(Result.OK, guard.check("1234567890123456", "1234567890123456"))
     }
 
     @Test

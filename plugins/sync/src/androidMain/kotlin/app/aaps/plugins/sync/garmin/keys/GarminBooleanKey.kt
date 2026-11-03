@@ -8,7 +8,7 @@ import app.aaps.plugins.sync.garmin.GarminKeyGuard
 
 /** The watch switch can only be turned on once a remote control PIN is set: without it every command is refused. */
 private val controlKeySet = PreferenceEnabledCondition { ctx ->
-    ctx.preferences.get(GarminStringKey.CommandKey).length >= GarminKeyGuard.MIN_KEY_LENGTH
+    GarminKeyGuard.isPinSet(ctx.preferences.get(GarminStringKey.CommandKey))
 }
 
 enum class GarminBooleanKey(

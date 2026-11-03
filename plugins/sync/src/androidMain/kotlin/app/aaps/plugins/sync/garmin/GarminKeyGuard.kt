@@ -17,8 +17,11 @@ class GarminKeyGuard(private val now: () -> Long) {
 
     companion object {
 
-        /** Shorter PINs are treated as not set: with the lockout 8 characters cannot be guessed. */
-        const val MIN_KEY_LENGTH = 8
+        /** Only 8-16 digits count as a PIN: that is all the watch app can type in, and with the
+         *  lockout 8 digits cannot be guessed. The AAPS dialog for a PIN cannot check this itself. */
+        private val PIN = Regex("[0-9]{8,16}")
+
+        fun isPinSet(pin: String): Boolean = PIN.matches(pin)
         const val MAX_FAILURES = 5
         const val LOCKOUT_MS = 15 * 60 * 1000L
     }
@@ -30,7 +33,7 @@ class GarminKeyGuard(private val now: () -> Long) {
     private var lockedUntil = 0L
 
     fun check(expected: String, given: String?, allowWhileLocked: Boolean = false): Result = synchronized(lock) {
-        if (expected.length < MIN_KEY_LENGTH) return Result.NO_KEY
+        if (!isPinSet(expected)) return Result.NO_KEY
         val locked = now() < lockedUntil
         if (locked && !allowWhileLocked) return Result.LOCKED
         // Constant time, so the time of the answer tells nothing about how much of the PIN was right.
