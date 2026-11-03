@@ -26,7 +26,7 @@ import java.net.URI
  * watch. /scene/stop ends the running scene without starting a follow-up scene, so the watch never
  * starts something the user did not see.
  *
- * The request handler only lets these through with the watch control key, which is off until the user
+ * The request handler only lets these through with the remote control PIN, which is off until the user
  * sets one; a scene needs no switch of its own, as the watch shows what it does before it is started.
  */
 @SingleIn(AppScope::class)
