@@ -130,7 +130,7 @@ class GarminPlugin(
         @VisibleForTesting
         fun maskKey(s: String) = KEY_IN_QUERY.replace(s, "key=***")
 
-        /** Commands blocked after wrong keys (not in HttpURLConnection). */
+        /** Commands blocked after wrong PINs (not in HttpURLConnection). */
         const val HTTP_TOO_MANY_REQUESTS = 429
 
         /** Longest /get?wait=: a longer wait only holds a server thread. */
@@ -192,12 +192,12 @@ class GarminPlugin(
     private val garminAapsKey get() = preferences.get(GarminStringKey.RequestKey)
 
     /**
-     * The key for commands. Unlike the AAPS key it is never sent to a watch: the AAPS key goes out
+     * The remote control PIN for commands. Unlike the AAPS key it is never sent to a watch: the AAPS key goes out
      * with every push, to any watch app that has called the open /get.
      */
     private val garminCommandKey get() = preferences.get(GarminStringKey.CommandKey)
 
-    /** Wrong command keys, counted over all requests. See GarminKeyGuard.kt. */
+    /** Wrong remote control PINs, counted over all requests. See GarminKeyGuard.kt. */
     @VisibleForTesting
     val keyGuard = GarminKeyGuard { clock.millis() }
 
@@ -311,7 +311,7 @@ class GarminPlugin(
                 registerEndpoint("/treatment/prepare", requestHandler(garminBolus::prepareTreatment, keyRequired = true))
                 registerEndpoint("/bolus/commit", requestHandler(garminBolus::commit, keyRequired = true))
                 registerEndpoint("/bolus/discard", requestHandler(garminBolus::discard, keyRequired = true))
-                // Stop still works with the right key while wrong keys block the other commands.
+                // Stop still works with the right PIN while wrong PINs block the other commands.
                 registerEndpoint("/bolus/stop", requestHandler(garminBolus::stop, keyRequired = true, allowWhileLocked = true))
                 registerEndpoint("/scene/list", requestHandler(garminScene::list, keyRequired = true))
                 registerEndpoint("/scene/prepare", requestHandler(garminScene::prepare, keyRequired = true))
@@ -323,7 +323,7 @@ class GarminPlugin(
                         // The unit the watch shows and sends a manual temp target in.
                         it.addProperty("units", if (loopHub.glucoseUnit == GlucoseUnit.MGDL) "mgdl" else "mmol")
                     }.toString()
-                // Only reads: the stop screen keeps its progress while wrong keys block the commands.
+                // Only reads: the stop screen keeps its progress while wrong PINs block the commands.
                 }, keyRequired = true, allowWhileLocked = true))
                 awaitReady(wait)
             }
@@ -463,29 +463,29 @@ class GarminPlugin(
     fun requestHandler(action: (URI) -> CharSequence, keyRequired: Boolean = false, allowWhileLocked: Boolean = false) = { caller: SocketAddress, uri: URI, _: String? ->
         // Reading (/get, /sgv.json) is open: any app on the phone could read the same values
         // elsewhere, and the watch faces and data fields then need no key. Everything that
-        // changes treatment (/carbs, /connect, temp target, bolus, scenes) needs the command key,
+        // changes treatment (/carbs, /connect, temp target, bolus, scenes) needs the remote control PIN,
         // and is refused while it is not set, because any app on the phone can call localhost.
         val check = if (keyRequired) keyGuard.check(garminCommandKey, getQueryParameter(uri, "key"), allowWhileLocked)
         else GarminKeyGuard.Result.OK
         when (check) {
             GarminKeyGuard.Result.NO_KEY     -> {
-                aapsLogger.warn(LTag.GARMIN, "No command key set, refused ${uri.path} from $caller")
+                aapsLogger.warn(LTag.GARMIN, "No remote control PIN set, refused ${uri.path} from $caller")
                 HttpURLConnection.HTTP_FORBIDDEN to "{}"
             }
 
             GarminKeyGuard.Result.WRONG      -> {
-                aapsLogger.warn(LTag.GARMIN, "Invalid command key from $caller for ${uri.path}")
+                aapsLogger.warn(LTag.GARMIN, "Invalid remote control PIN from $caller for ${uri.path}")
                 HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
             }
 
             GarminKeyGuard.Result.LOCKED_NOW -> {
-                // Another app on the phone may be guessing the key; the watch shows "locked" from now on.
-                aapsLogger.warn(LTag.GARMIN, "${GarminKeyGuard.MAX_FAILURES} wrong command keys, commands blocked for 15 min")
+                // Another app on the phone may be guessing the PIN; the watch shows "locked" from now on.
+                aapsLogger.warn(LTag.GARMIN, "${GarminKeyGuard.MAX_FAILURES} wrong remote control PINs, commands blocked for 15 min")
                 HTTP_TOO_MANY_REQUESTS to "{}"
             }
 
             GarminKeyGuard.Result.LOCKED     -> {
-                aapsLogger.warn(LTag.GARMIN, "Commands blocked after wrong keys, refused ${uri.path} from $caller")
+                aapsLogger.warn(LTag.GARMIN, "Commands blocked after wrong PINs, refused ${uri.path} from $caller")
                 HTTP_TOO_MANY_REQUESTS to "{}"
             }
 

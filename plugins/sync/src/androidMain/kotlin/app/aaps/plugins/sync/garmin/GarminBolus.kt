@@ -49,10 +49,10 @@ import java.time.LocalTime
  * insulin amount.
  *
  * Because this doses insulin it is stricter than the Wear watch: it needs "Carbs and bolus from Garmin
- * watch" (off by default) next to the control key the request handler checks, a prepared dose can only
+ * watch" (off by default) next to the remote control PIN the request handler checks, a prepared dose can only
  * be given for [PREPARED_TTL_MS], and not when another bolus was given after AAPS began computing it.
  *
- * /bolus/stop only needs the key: stopping a bolus is a safety action, as on the Wear watch.
+ * /bolus/stop only needs the PIN: stopping a bolus is a safety action, as on the Wear watch.
  * /status only reads, so the watch can show the menu items that can be used and close its stop
  * screen when the bolus is done. /wizard/prepare&type= splits the carbs by meal type like the AAPS
  * bolus wizard.
@@ -291,7 +291,7 @@ class GarminBolus(
         aapsLogger.info(LTag.GARMIN, "bolus id ${p.id} discarded")
     }
 
-    /** Stops a bolus that is queued or running. Only the key is needed: stopping is a safety action. */
+    /** Stops a bolus that is queued or running. Only the PIN is needed: stopping is a safety action. */
     fun stop(uri: URI): CharSequence {
         // On AAPSClient the bolus runs on the master, which this queue cannot stop.
         if (config.AAPSCLIENT) return error("Not on AAPSClient")

@@ -12,7 +12,7 @@ uses push, steps and the extra `/get` fields.
 **Watch app for the commands:** [AAPS Control widget](https://github.com/Pwb0186/aaps-garmin-control-widget),
 a Connect IQ widget that you build and install yourself.
 
-Without a control key, every command is refused (see [Security](#security)). Then the branch
+Without a remote control PIN, every command is refused (see [Security](#security)). Then the branch
 only adds push, steps and the extra `/get` fields.
 
 ## What it adds
@@ -121,20 +121,20 @@ Everything goes through the same AAPS code as the Wear watch: `BatchExecutor`,
 The HTTP server only listens on `127.0.0.1`, but any app on the phone can call it.
 Therefore:
 
-- **Garmin watch control key** (new setting, at least 8 characters): every command needs
-  it, also `/carbs` and `/connect`. AAPS never sends it to a watch. You type the same key
-  into the watch app. The key alone unlocks temp targets and scenes.
+- **Garmin remote control PIN** (new setting, 8 to 16 digits): every command needs
+  it, also `/carbs` and `/connect`. AAPS never sends it to a watch. You type the same PIN
+  into the watch app, under **Remote PIN**. The PIN alone unlocks temp targets and scenes.
 - **Allow carbs and bolus from Garmin watch**: Quick Wizard, bolus wizard, treatment and
-  carbs also need this switch. It is off by default. You can only turn it on when a control
-  key is set.
+  carbs also need this switch. It is off by default. You can only turn it on when a remote
+  control PIN is set.
 - **Request Key** (the existing AAPS key) opens no commands. AAPS sends it in its push
   messages to every watch app that has called `/get`, so it must not be trusted.
 - Reading (`/get`, `/sgv.json`) needs no key.
-- After 5 wrong control keys within 15 minutes, the watch commands are locked for
-  15 minutes. The wrong keys can come from any app. A right key in between does not reset
+- After 5 wrong PINs within 15 minutes, the watch commands are locked for
+  15 minutes. The wrong PINs can come from any app. A right PIN in between does not reset
   the count.
-- While locked, every command is refused (HTTP 429), even with the right key.
-- Except stop bolus and `/status`: they are never locked. With the right key you can always
+- While locked, every command is refused (HTTP 429), even with the right PIN.
+- Except stop bolus and `/status`: they are never locked. With the right PIN you can always
   stop a running bolus from the watch and see how far it has come.
 - A bolus is refused while another bolus or SMB is queued or running.
 - A commit is refused when a bolus or SMB was stored after AAPS started to compute the
@@ -143,7 +143,7 @@ Therefore:
 - Requests with a line over 8 KB, more than 50 headers or a body over 16 KB are refused.
 
 #### Endpoints
-All need `key=<control key>`. Answers are JSON.
+All need `key=<remote control PIN>`. Answers are JSON.
 
 | Endpoint | What it does | Needs the switch |
 |---|---|---|
@@ -161,8 +161,8 @@ All need `key=<control key>`. Answers are JSON.
 | `/bolus/commit?id=` | gives the prepared bolus, Quick Wizard or treatment | yes |
 | `/bolus/discard?id=` | drops a waiting dose that will not be given (BACK, or the time ran out on the watch). Then the loop can give SMBs again at once. The watch ignores the answer; older builds answer 404 | no |
 | `/bolus/stop` | stops a queued or running bolus | no |
-| `/carbs` | unchanged from AAPS, but needs the control key | yes |
-| `/connect` | unchanged from AAPS, but needs the control key | no |
+| `/carbs` | unchanged from AAPS, but needs the remote control PIN | yes |
+| `/connect` | unchanged from AAPS, but needs the remote control PIN | no |
 
 Prepare answers: `{"ok":true,"id":"<id>","lines":[...],"insulin":<U>}`. `insulin` is left
 out when it is unknown.
@@ -197,7 +197,7 @@ Commit answers one of these:
 V1 watch faces and `/sgv.json` clients work as before. With no push watch face and no AAPS
 key, AAPS does not connect to Garmin Connect, as before.
 
-One change: `/carbs` and `/connect` now need the control key. `/carbs` also needs the
+One change: `/carbs` and `/connect` now need the remote control PIN. `/carbs` also needs the
 "Allow carbs and bolus from Garmin watch" switch. So an old data field that sends carbs or
 a pump disconnect without them is refused.
 Wear OS, the loop, pumps and all other plugins are plain AAPS 4.0.0.
@@ -210,7 +210,7 @@ Wear OS, the loop, pumps and all other plugins are plain AAPS 4.0.0.
 3. Install a watch face that uses V2 or sends steps, for example the
    ["AAPS Push" watch face](https://github.com/Pwb0186/aaps-garmin-push-watchface).
    To send steps, turn on "Send steps to AAPS" on the watch face.
-4. Only for commands: set a control key in the Garmin settings. If you want carbs and
+4. Only for commands: set a remote control PIN in the Garmin settings. If you want carbs and
    bolus, turn on "Allow carbs and bolus from Garmin watch". Then install the
    [AAPS Control widget](https://github.com/Pwb0186/aaps-garmin-control-widget).
 
@@ -227,7 +227,7 @@ Wear OS, the loop, pumps and all other plugins are plain AAPS 4.0.0.
 All changes are in `plugins/sync/src/androidMain/kotlin/app/aaps/plugins/sync/garmin/`
 and the tests next to it. New files: `GarminSteps.kt` (steps), `GarminV2Push.kt`
 (registered push apps), `GarminQuery.kt` (query parser), `GarminBolus.kt`,
-`GarminTempTarget.kt`, `GarminScene.kt` (commands), `GarminKeyGuard.kt` (control key lockout).
+`GarminTempTarget.kt`, `GarminScene.kt` (commands), `GarminKeyGuard.kt` (PIN lockout).
 
 ## Credits
 - The Garmin plugin is by the AAPS developers.
