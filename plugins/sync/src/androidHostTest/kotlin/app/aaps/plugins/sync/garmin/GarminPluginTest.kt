@@ -248,8 +248,8 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @Test
     fun requestHandler_KeyRequiredAndProvided() {
-        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("commandkey")
-        val uri = createUri(mapOf("key" to "commandkey"))
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("12345678")
+        val uri = createUri(mapOf("key" to "12345678"))
         val handler = gp.requestHandler({ u: URI -> assertEquals(uri, u); "OK" }, keyRequired = true)
         assertEquals(
             HttpURLConnection.HTTP_OK to "OK",
@@ -259,7 +259,7 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @Test
     fun requestHandler_KeyRequired_WrongOrMissingKey() {
-        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("commandkey")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("12345678")
         val handler = gp.requestHandler({ "OK" }, keyRequired = true)
         assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(emptyMap()), null))
         assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(mapOf("key" to "bar")), null))
@@ -283,18 +283,18 @@ class GarminPluginTest : TestBaseWithProfile() {
     fun requestHandler_KeyRequired_AapsKeyDoesNotOpenCommands() {
         // The AAPS key is pushed to every watch app, so it must never work for commands.
         whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("aapskey123")
-        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("commandkey")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("12345678")
         val handler = gp.requestHandler({ "OK" }, keyRequired = true)
         assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(mapOf("key" to "aapskey123")), null))
     }
 
     @Test
     fun requestHandler_WrongKeys_LockAllCommands_ButStop() {
-        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("commandkey")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("12345678")
         val command = gp.requestHandler({ "OK" }, keyRequired = true)
         val stop = gp.requestHandler({ "STOP" }, keyRequired = true, allowWhileLocked = true)
         val wrong = createUri(mapOf("key" to "guess"))
-        val right = createUri(mapOf("key" to "commandkey"))
+        val right = createUri(mapOf("key" to "12345678"))
         repeat(GarminKeyGuard.MAX_FAILURES - 1) {
             assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", command(mock<SocketAddress>(), wrong, null))
         }
@@ -630,19 +630,10 @@ class GarminPluginTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun requestHandler_KeyWithPlus() {
-        // A "+" in the key reaches AAPS as %2B and must be decoded once. Decoding
-        // uri.query (already decoded) a second time turned it into a space (401).
-        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("a+bcdefgh")
-        val uri = URI("http://foo?key=a%2Bbcdefgh")
-        val handler = gp.requestHandler({ "OK" }, keyRequired = true)
-        assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
-    }
-
-    @Test
-    fun requestHandler_KeyWithPercent() {
-        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("100%abcde")
-        val uri = URI("http://foo?key=100%25abcde")
+    fun requestHandler_KeyPercentEncoded() {
+        // The key must be decoded exactly once; GarminQueryTest covers "+" and "%".
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("12345678")
+        val uri = URI("http://foo?key=%31%32345678")
         val handler = gp.requestHandler({ "OK" }, keyRequired = true)
         assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
     }
