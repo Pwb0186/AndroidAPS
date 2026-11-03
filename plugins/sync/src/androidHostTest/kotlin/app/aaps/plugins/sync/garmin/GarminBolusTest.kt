@@ -9,6 +9,7 @@ import app.aaps.core.data.ui.ConfirmationRole
 import app.aaps.core.interfaces.aps.AutosensDataStore
 import app.aaps.core.interfaces.bolus.BatchAction
 import app.aaps.core.interfaces.bolus.BatchExecutor
+import app.aaps.core.interfaces.bolus.MasterActionExecutor
 import app.aaps.core.interfaces.bolus.WizardExecutor
 import app.aaps.core.interfaces.clientcontrol.ActionProgress
 import app.aaps.core.interfaces.clientcontrol.FailureReason
@@ -583,6 +584,28 @@ class GarminBolusTest : TestBaseWithProfile() {
         assertFalse(json(bolus.prepareWizard(uri("carbs=40&percent=5")))["ok"].asBoolean)
         assertFalse(json(bolus.prepareWizard(uri("carbs=40&percent=abc")))["ok"].asBoolean)
         runBlocking { verify(wizardExecutor, never()).prepare(any(), any()) }
+    }
+
+    private fun wizardInputs(query: String): MasterActionExecutor.WizardInputs {
+        bolus.prepareWizard(uri(query))
+        val captor = argumentCaptor<WizardExecutor.WizardSource>()
+        runBlocking { verify(wizardExecutor).prepare(captor.capture(), any()) }
+        return (captor.firstValue as WizardExecutor.WizardSource.Manual).inputs
+    }
+
+    @Test
+    fun wizard_alarmWithCarbTime_on() {
+        assertTrue(wizardInputs("carbs=40&carbTime=15&alarm=1").alarm)
+    }
+
+    @Test
+    fun wizard_alarmWithoutCarbTime_off() {
+        assertFalse(wizardInputs("carbs=40&carbTime=0&alarm=1").alarm)
+    }
+
+    @Test
+    fun wizard_noAlarmParameter_off() {
+        assertFalse(wizardInputs("carbs=40&carbTime=15").alarm)
     }
 
     @Test
