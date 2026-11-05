@@ -230,10 +230,15 @@ class HttpServer internal constructor(private var aapsLogger: AAPSLogger, val po
             val headerLine = readLine(input, Charset.forName("ASCII"))
             val p = REQUEST_HEADER.matcher(headerLine)
             if (!p.matches()) {
-                throw IOException("invalid HTTP header '$headerLine'")
+                throw IOException("invalid HTTP header '${GarminPlugin.maskKey(headerLine)}'")
             }
             val post = ("POST" == p.group(1))
-            var uri = URI(p.group(2))
+            var uri = try {
+                URI(p.group(2))
+            } catch (_: java.net.URISyntaxException) {
+                // Not an IOException, so it would skip the 400 answer, and its message holds the whole line.
+                throw IOException("invalid request '${GarminPlugin.maskKey(headerLine)}'")
+            }
             val headers: MutableMap<String, String?> = HashMap()
             while (true) {
                 val line = readLine(input, Charset.forName("ASCII"))
@@ -252,7 +257,7 @@ class HttpServer internal constructor(private var aapsLogger: AAPSLogger, val po
                 val keepAlive = ("Keep-Alive" == headers["Connection"])
                 val contentType = headers["Content-Type"]
                 if (keepAlive && contentLength == Int.MAX_VALUE) {
-                    throw IOException("keep-alive without content-length for $uri")
+                    throw IOException("keep-alive without content-length for ${GarminPlugin.maskKey(uri.toString())}")
                 }
                 body = readBody(input, contentLength)
                 if (("application/x-www-form-urlencoded" == contentType)) {
