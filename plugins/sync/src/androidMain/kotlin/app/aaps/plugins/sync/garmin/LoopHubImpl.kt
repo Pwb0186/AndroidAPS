@@ -114,6 +114,9 @@ class LoopHubImpl(
             preferences.get(UnitDoubleKey.OverviewHighMark), glucoseUnit
         )
 
+    override val temporaryTarget
+        get() = runBlocking { persistenceLayer.getTemporaryTargetActiveAt(clock.millis()) }
+
     /** Tells the loop algorithm that the pump is physically connected. */
     override fun connectPump() {
         appScope.launch {

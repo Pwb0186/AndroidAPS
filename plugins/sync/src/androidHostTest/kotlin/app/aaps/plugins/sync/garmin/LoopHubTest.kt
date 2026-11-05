@@ -36,6 +36,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -315,5 +316,12 @@ class LoopHubTest : TestBase() {
         )
         kotlinx.coroutines.delay(100.milliseconds) // Give time for GlobalScope.launch to complete
         verify(persistenceLayer).insertOrUpdateHeartRates(listOf(hr))
+    }
+
+    @Test
+    fun testTemporaryTargetNone() = runTest {
+        whenever(persistenceLayer.getTemporaryTargetActiveAt(clock.millis())).thenReturn(null)
+        assertNull(loopHub.temporaryTarget)
+        verify(persistenceLayer).getTemporaryTargetActiveAt(clock.millis())
     }
 }

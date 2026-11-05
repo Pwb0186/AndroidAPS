@@ -6,6 +6,7 @@ import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.interfaces.InterfacesStrings
+import app.aaps.core.interfaces.bolus.BatchExecutor
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
@@ -55,11 +56,12 @@ import kotlin.math.roundToInt
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
- * carbs, heart rate and pump disconnect events from the device. It communicates
+ * carbs, heart rate, pump disconnect events, temp targets, boluses and scenes from the device. It communicates
  * via HTTP on localhost or Garmin's native CIQ library.
  *
  * On a client it only shows values: carbs and pump connect or disconnect from the
  * watch are refused there, see [refuseOnClient].
+ * Temp targets from the watch are in GarminTempTarget, boluses in GarminBolus, scenes in GarminScene.
  */
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
 @IntKey(370)
@@ -73,7 +75,12 @@ class GarminPlugin(
     private val loopHub: LoopHub,
     private val persistenceLayer: PersistenceLayer,
     private val config: Config,
-    notificationManager: NotificationManager
+    notificationManager: NotificationManager,
+    batchExecutor: BatchExecutor,
+    /** Bolus wizard, Quick Wizard and stop bolus from the watch. See GarminBolus.kt. */
+    private val garminBolus: GarminBolus,
+    /** Scenes from the watch. See GarminScene.kt. */
+    private val garminScene: GarminScene
 ) : PluginBaseWithPreferences(
     pluginDescription = PluginDescription()
         .mainType(PluginType.SYNC)
@@ -86,6 +93,22 @@ class GarminPlugin(
 
     /** HTTP Server for local HTTP server communication (device app requests values) .*/
     private var server: HttpServer? = null
+
+    /** Temp target from the watch (/tt/prepare, /tt/commit). See GarminTempTarget.kt. */
+    @VisibleForTesting
+    val garminTempTarget = GarminTempTarget(aapsLogger, preferences, rh, batchExecutor, { loopHub.temporaryTarget }, { loopHub.glucoseUnit }) { clock.millis() }
+
+    companion object {
+        // The key in a logged request (?key=... / &key=...): the remote control PIN or the AAPS key.
+        private val KEY_IN_QUERY = Regex("(?<=[?&])key=[^&]+")
+
+        /** Replaces a non-empty key in [s] with "***", so logs can be shared. */
+        @VisibleForTesting
+        fun maskKey(s: String) = KEY_IN_QUERY.replace(s, "key=***")
+
+        /** Commands blocked after wrong PINs (not in HttpURLConnection). */
+        const val HTTP_TOO_MANY_REQUESTS = 429
+    }
 
     @VisibleForTesting
     var garminMessengerField: GarminMessenger? = null
@@ -126,6 +149,16 @@ class GarminPlugin(
     private var lastGlucoseValueTimestamp: Long? = null
     private val glucoseUnitStr get() = if (loopHub.glucoseUnit == GlucoseUnit.MGDL) "mgdl" else "mmoll"
     private val garminAapsKey get() = preferences.get(GarminStringKey.RequestKey)
+
+    /**
+     * The remote control PIN for commands. Unlike the AAPS key it is never sent to a watch: the AAPS key is sent
+     * to the watch apps when a request has the wrong key.
+     */
+    private val garminCommandKey get() = preferences.get(GarminStringKey.CommandKey)
+
+    /** Wrong remote control PINs, counted over all requests. See GarminKeyGuard.kt. */
+    @VisibleForTesting
+    val keyGuard = GarminKeyGuard { clock.millis() }
 
     private fun setupGarminMessenger() {
         resetGarminMessenger()
@@ -173,9 +206,31 @@ class GarminPlugin(
             server?.close()
             server = HttpServer(aapsLogger, port).apply {
                 registerEndpoint("/get", requestHandler(::onGetBloodGlucose))
-                registerEndpoint("/carbs", requestHandler(::onPostCarbs))
-                registerEndpoint("/connect", requestHandler(::onConnectPump))
+                registerEndpoint("/carbs", commandHandler(::onPostCarbs))
+                registerEndpoint("/connect", commandHandler(::onConnectPump))
                 registerEndpoint("/sgv.json", requestHandler(::onSgv))
+                registerEndpoint("/tt/prepare", commandHandler(garminTempTarget::prepare))
+                registerEndpoint("/tt/commit", commandHandler(garminTempTarget::commit))
+                registerEndpoint("/wizard/prepare", commandHandler(garminBolus::prepareWizard))
+                registerEndpoint("/qw/list", commandHandler(garminBolus::quickWizardList))
+                registerEndpoint("/qw/prepare", commandHandler(garminBolus::prepareQuickWizard))
+                registerEndpoint("/treatment/prepare", commandHandler(garminBolus::prepareTreatment))
+                registerEndpoint("/bolus/commit", commandHandler(garminBolus::commit))
+                registerEndpoint("/bolus/discard", commandHandler(garminBolus::discard))
+                // Stop still works with the right PIN while wrong PINs block the other commands.
+                registerEndpoint("/bolus/stop", commandHandler(garminBolus::stop, allowWhileLocked = true))
+                registerEndpoint("/scene/list", commandHandler(garminScene::list))
+                registerEndpoint("/scene/prepare", commandHandler(garminScene::prepare))
+                registerEndpoint("/scene/commit", commandHandler(garminScene::commit))
+                registerEndpoint("/scene/stop", commandHandler(garminScene::stop))
+                registerEndpoint("/status", commandHandler({
+                    garminBolus.status(loopHub.temporaryTarget != null).also {
+                        garminScene.addStatus(it)
+                        // The unit the watch shows and sends a manual temp target in.
+                        it.addProperty("units", if (loopHub.glucoseUnit == GlucoseUnit.MGDL) "mgdl" else "mmol")
+                    }.toString()
+                // Only reads: the stop screen keeps its progress while wrong PINs block the commands.
+                }, allowWhileLocked = true))
                 awaitReady(wait)
             }
         } else if (server != null) {
@@ -295,6 +350,44 @@ class GarminPlugin(
         }
     }
 
+    /** Handler for commands from the watch: they need the remote control PIN, not the AAPS key.
+     *
+     * Reading (/get, /sgv.json) stays with [requestHandler]. Commands are refused while no PIN is
+     * set, because any app on the phone can call localhost.
+     */
+    @VisibleForTesting
+    fun commandHandler(action: (URI) -> CharSequence, allowWhileLocked: Boolean = false) = { caller: SocketAddress, uri: URI, _: String? ->
+        when (keyGuard.check(garminCommandKey, getQueryParameter(uri, "key"), allowWhileLocked)) {
+            GarminKeyGuard.Result.NO_KEY     -> {
+                aapsLogger.warn(LTag.GARMIN, "No remote control PIN set, refused ${uri.path} from $caller")
+                HttpURLConnection.HTTP_FORBIDDEN to "{}"
+            }
+
+            GarminKeyGuard.Result.WRONG      -> {
+                aapsLogger.warn(LTag.GARMIN, "Invalid remote control PIN from $caller for ${uri.path}")
+                HttpURLConnection.HTTP_UNAUTHORIZED to "{}"
+            }
+
+            GarminKeyGuard.Result.LOCKED_NOW -> {
+                // Another app on the phone may be guessing the PIN; the watch shows "locked" from now on.
+                aapsLogger.warn(LTag.GARMIN, "${GarminKeyGuard.MAX_FAILURES} wrong remote control PINs, commands blocked for 15 min")
+                HTTP_TOO_MANY_REQUESTS to "{}"
+            }
+
+            GarminKeyGuard.Result.LOCKED     -> {
+                aapsLogger.warn(LTag.GARMIN, "Commands blocked after wrong PINs, refused ${uri.path} from $caller")
+                HTTP_TOO_MANY_REQUESTS to "{}"
+            }
+
+            GarminKeyGuard.Result.OK         -> {
+                aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}")
+                HttpURLConnection.HTTP_OK to action(uri).also {
+                    aapsLogger.info(LTag.GARMIN, "get from $caller resp , req: ${maskKey(uri.toString())}, result: $it")
+                }
+            }
+        }
+    }
+
     /** Responses to get glucose value request by the device.
      *
      * Also, gets the heart rate readings from the device.
@@ -324,10 +417,10 @@ class GarminPlugin(
         return jo.toString()
     }
 
-    private fun getQueryParameter(uri: URI, name: String) = (uri.query ?: "")
-        .split("&")
-        .map { kv -> kv.split("=") }
-        .firstOrNull { kv -> kv.size == 2 && kv[0] == name }?.get(1)
+    // Decodes each value exactly once (see URI.queryParameter in GarminQuery.kt).
+    // POST form bodies stay encoded, as in the original Garmin plugin - HttpServer builds
+    // their URI with extra quoting.
+    private fun getQueryParameter(uri: URI, name: String): String? = uri.queryParameter(name)
 
     private fun getQueryParameter(
         uri: URI,
@@ -396,6 +489,11 @@ class GarminPlugin(
     /** Handles carb notification from the device. */
     @VisibleForTesting
     fun onPostCarbs(uri: URI): CharSequence {
+        // Carbs make the loop give insulin, so they need the same switch as a bolus from the watch.
+        if (!preferences.get(GarminBooleanKey.BolusFromWatch)) {
+            aapsLogger.warn(LTag.GARMIN, "carbs from the watch refused: not allowed in the Garmin settings")
+            return ""
+        }
         postCarbs(getQueryParameter(uri, "carbs", 0L).toInt())
         return ""
     }
@@ -499,8 +597,9 @@ class GarminPlugin(
         items = listOf(
             GarminBooleanKey.LocalHttpServer,
             GarminIntKey.LocalHttpPort,
-            GarminStringKey.RequestKey
-
+            GarminStringKey.RequestKey,
+            GarminStringKey.CommandKey,
+            GarminBooleanKey.BolusFromWatch
         ),
         icon = pluginDescription.icon
     )
