@@ -17,6 +17,7 @@ import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
 import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.rx.collectResilient
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.compose.icons.IcPluginGarmin
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
@@ -55,7 +56,7 @@ import kotlin.math.roundToInt
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
- * carbs, heart rate and pump disconnect events from the device. It communicates
+ * carbs, heart rate, steps and pump disconnect events from the device. It communicates
  * via HTTP on localhost or Garmin's native CIQ library.
  *
  * On a client it only shows values: carbs and pump connect or disconnect from the
@@ -69,6 +70,7 @@ class GarminPlugin(
     aapsLogger: AAPSLogger,
     rh: TextResolver,
     preferences: Preferences,
+    private val sp: KeyValueStore,
     private val context: Context,
     private val loopHub: LoopHub,
     private val persistenceLayer: PersistenceLayer,
@@ -86,6 +88,10 @@ class GarminPlugin(
 
     /** HTTP Server for local HTTP server communication (device app requests values) .*/
     private var server: HttpServer? = null
+
+    /** Step counts from the watch (/get?steps=...). See GarminSteps.kt. */
+    @VisibleForTesting
+    val garminSteps = GarminSteps(aapsLogger, sp, loopHub, { clock })
 
     @VisibleForTesting
     var garminMessengerField: GarminMessenger? = null
@@ -302,6 +308,7 @@ class GarminPlugin(
     @VisibleForTesting
     fun onGetBloodGlucose(uri: URI): CharSequence {
         receiveHeartRate(uri)
+        garminSteps.receive(uri)
         val profileName = loopHub.currentProfileName
         val waitSec = getQueryParameter(uri, "wait", 0L)
         val glucoseValues = getGlucoseValues(Duration.ofSeconds(waitSec))
@@ -384,6 +391,9 @@ class GarminPlugin(
         samplingStart: Instant, samplingEnd: Instant,
         avg: Int, device: String?, test: Boolean
     ) {
+        // Most requests carry no heart rate at all (no hr/hrStart parameters) - nothing
+        // to log or store then.
+        if (avg <= 0 && samplingStart == Instant.ofEpochMilli(0L)) return
         aapsLogger.info(LTag.GARMIN, "average heart rate $avg BPM $samplingStart to $samplingEnd")
         if (test) return
         if (avg > 10 && samplingStart > Instant.ofEpochMilli(0L) && samplingEnd > samplingStart) {

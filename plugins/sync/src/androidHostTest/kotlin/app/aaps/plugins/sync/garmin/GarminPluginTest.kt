@@ -6,6 +6,7 @@ import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.notifications.NotificationId
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import app.aaps.core.keys.BooleanNonKey
 import app.aaps.core.keys.IntNonKey
 import app.aaps.core.keys.StringNonKey
@@ -32,6 +33,7 @@ import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.atMost
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoMoreInteractions
@@ -54,11 +56,13 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @Mock private lateinit var loopHub: LoopHub
     @Mock private lateinit var persistenceLayer: PersistenceLayer
+    // Named garminSp so it can't clash with an "sp" in the test base class.
+    @Mock private lateinit var garminSp: KeyValueStore
     private val clock = Clock.fixed(Instant.ofEpochMilli(10_000), ZoneId.of("UTC"))
 
     @BeforeEach
     fun setup() {
-        gp = GarminPlugin(aapsLogger, rh, preferences, context, loopHub, persistenceLayer, config, notificationManager)
+        gp = GarminPlugin(aapsLogger, rh, preferences, garminSp, context, loopHub, persistenceLayer, config, notificationManager)
         gp.clock = clock
         whenever(loopHub.currentProfileName).thenReturn("Default")
         whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28890)
@@ -400,7 +404,7 @@ class GarminPluginTest : TestBaseWithProfile() {
     private fun clientPlugin(): GarminPlugin {
         whenever(config.AAPSCLIENT).thenReturn(true)
         val text = generatedTextResolver("sync" to SyncStringsValues::textOf)
-        return GarminPlugin(aapsLogger, text, preferences, context, loopHub, persistenceLayer, config, notificationManager)
+        return GarminPlugin(aapsLogger, text, preferences, garminSp, context, loopHub, persistenceLayer, config, notificationManager)
     }
 
     private fun postedNotice(): String {
@@ -501,4 +505,10 @@ class GarminPluginTest : TestBaseWithProfile() {
         verify(loopHub, atLeastOnce()).glucoseUnit
     }
 
+    @Test
+    fun receiveHeartRate_NoHeartRateInRequest() {
+        // A /get without hr/hrStart/hrEnd (most of them) stores nothing.
+        gp.receiveHeartRate(createUri(mapOf("trig" to "push")))
+        verify(loopHub, never()).storeHeartRate(any(), any(), any(), anyOrNull())
+    }
 }
