@@ -32,6 +32,7 @@ import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.atMost
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoMoreInteractions
@@ -58,13 +59,15 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @BeforeEach
     fun setup() {
-        gp = GarminPlugin(aapsLogger, rh, preferences, context, loopHub, persistenceLayer, config, notificationManager)
+        gp = GarminPlugin(aapsLogger, rh, preferences, context, loopHub, persistenceLayer, config, notificationManager, mock(), mock(), mock())
         gp.clock = clock
         whenever(loopHub.currentProfileName).thenReturn("Default")
         whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28890)
         whenever(preferences.get(any<IntNonKey>())).thenAnswer { i -> 0 }
         whenever(preferences.get(any<BooleanNonKey>())).thenAnswer { i -> false }
         whenever(preferences.get(any<StringNonKey>())).thenAnswer { i -> "" }
+        // Not covered by the StringNonKey stub above; the plugin never gets null in real use.
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("")
     }
 
     @AfterEach
@@ -268,6 +271,95 @@ class GarminPluginTest : TestBaseWithProfile() {
     }
 
     @Test
+    fun commandHandler_WrongOrMissingKey() {
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("12345678")
+        val handler = gp.commandHandler({ "OK" })
+        assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(emptyMap()), null))
+        assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(mapOf("key" to "bar")), null))
+    }
+
+    @Test
+    fun commandHandler_NoKeySet_Refused() {
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("")
+        val handler = gp.commandHandler({ "OK" })
+        assertEquals(HttpURLConnection.HTTP_FORBIDDEN to "{}", handler(mock<SocketAddress>(), createUri(emptyMap()), null))
+    }
+
+    @Test
+    fun commandHandler_ShortCommandKey_Refused() {
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("1234567")
+        val handler = gp.commandHandler({ "OK" })
+        assertEquals(HttpURLConnection.HTTP_FORBIDDEN to "{}", handler(mock<SocketAddress>(), createUri(mapOf("key" to "1234567")), null))
+    }
+
+    @Test
+    fun commandHandler_AapsKeyDoesNotOpenCommands() {
+        // The AAPS key is sent to the watch apps, so it must never work for commands.
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("aapskey123")
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("12345678")
+        val handler = gp.commandHandler({ "OK" })
+        assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", handler(mock<SocketAddress>(), createUri(mapOf("key" to "aapskey123")), null))
+    }
+
+    @Test
+    fun commandHandler_KeyPercentEncoded() {
+        // The key must be decoded exactly once; GarminQueryTest covers "+" and "%".
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("12345678")
+        val uri = URI("http://foo?key=%31%32345678")
+        val handler = gp.commandHandler({ "OK" })
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", handler(mock<SocketAddress>(), uri, null))
+    }
+
+    @Test
+    fun commandHandler_WrongKeys_LockAllCommands_ButStop() {
+        whenever(preferences.get(GarminStringKey.CommandKey)).thenReturn("12345678")
+        val command = gp.commandHandler({ "OK" })
+        val stop = gp.commandHandler({ "STOP" }, allowWhileLocked = true)
+        val wrong = createUri(mapOf("key" to "guess"))
+        val right = createUri(mapOf("key" to "12345678"))
+        repeat(GarminKeyGuard.MAX_FAILURES - 1) {
+            assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED to "{}", command(mock<SocketAddress>(), wrong, null))
+        }
+        assertEquals(GarminPlugin.HTTP_TOO_MANY_REQUESTS to "{}", command(mock<SocketAddress>(), wrong, null))
+        // Locked: also the right key is refused, but stop still works with it.
+        assertEquals(GarminPlugin.HTTP_TOO_MANY_REQUESTS to "{}", command(mock<SocketAddress>(), right, null))
+        assertEquals(HttpURLConnection.HTTP_OK to "STOP", stop(mock<SocketAddress>(), right, null))
+        assertEquals(GarminPlugin.HTTP_TOO_MANY_REQUESTS to "{}", stop(mock<SocketAddress>(), wrong, null))
+        gp.clock = Clock.offset(clock, Duration.ofMillis(GarminKeyGuard.LOCKOUT_MS + 1))
+        assertEquals(HttpURLConnection.HTTP_OK to "OK", command(mock<SocketAddress>(), right, null))
+    }
+
+    @Test
+    fun setupHttpServer_CommandsNeedKey(): Unit = runBlocking {
+        // Only the AAPS key is set: every command must still be refused.
+        whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("aapskey123")
+        whenever(preferences.get(GarminBooleanKey.LocalHttpServer)).thenReturn(true)
+        whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28894)
+        gp.setupHttpServer(Duration.ofSeconds(10))
+        val commands = listOf(
+            "/carbs?carbs=10", "/connect?disconnectMinutes=30", "/tt/prepare?preset=activity", "/tt/commit?id=1",
+            "/wizard/prepare?carbs=10", "/qw/list", "/qw/prepare?guid=a", "/treatment/prepare?carbs=10", "/bolus/commit?id=1", "/bolus/discard?id=1", "/bolus/stop",
+            "/scene/list", "/scene/prepare?id=a", "/scene/commit?id=1", "/scene/stop", "/status"
+        )
+        for (path in commands) {
+            val sep = if (path.contains('?')) '&' else '?'
+            val resp = URI("http://127.0.0.1:28894$path${sep}key=aapskey123").toURL().openConnection() as HttpURLConnection
+            assertEquals(HttpURLConnection.HTTP_FORBIDDEN, resp.responseCode, path)
+        }
+        gp.onStop()
+    }
+
+    @Test
+    fun maskKey() {
+        assertEquals("/get?wait=5&key=***&hr=60", GarminPlugin.maskKey("/get?wait=5&key=12345678&hr=60"))
+        assertEquals("/get?key=***", GarminPlugin.maskKey("/get?key=a%2Bb"))
+        // An empty key stays visible - it shows that no key is set.
+        assertEquals("/get?wait=5&key=&hr=60", GarminPlugin.maskKey("/get?wait=5&key=&hr=60"))
+        // Only the "key" parameter, not one that ends with "key".
+        assertEquals("/get?appkey=x&key=***", GarminPlugin.maskKey("/get?appkey=x&key=y"))
+    }
+
+    @Test
     fun onConnectDevice() {
         gp.garminMessengerField = mock<GarminMessenger>()
         whenever(preferences.get(GarminStringKey.RequestKey)).thenReturn("foo")
@@ -371,7 +463,15 @@ class GarminPluginTest : TestBaseWithProfile() {
     }
 
     @Test
+    fun testOnPostCarbs_switchOff_refused() {
+        val uri = createUri(mapOf("carbs" to "12"))
+        assertEquals("", gp.onPostCarbs(uri))
+        verify(loopHub, never()).postCarbs(any())
+    }
+
+    @Test
     fun testOnPostCarbs() {
+        whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(true)
         val uri = createUri(mapOf("carbs" to "12"))
         assertEquals("", gp.onPostCarbs(uri))
         verify(loopHub).postCarbs(12)
@@ -400,7 +500,7 @@ class GarminPluginTest : TestBaseWithProfile() {
     private fun clientPlugin(): GarminPlugin {
         whenever(config.AAPSCLIENT).thenReturn(true)
         val text = generatedTextResolver("sync" to SyncStringsValues::textOf)
-        return GarminPlugin(aapsLogger, text, preferences, context, loopHub, persistenceLayer, config, notificationManager)
+        return GarminPlugin(aapsLogger, text, preferences, context, loopHub, persistenceLayer, config, notificationManager, mock(), mock(), mock())
     }
 
     private fun postedNotice(): String {
@@ -411,6 +511,7 @@ class GarminPluginTest : TestBaseWithProfile() {
 
     @Test
     fun testOnPostCarbs_OnClient() {
+        whenever(preferences.get(GarminBooleanKey.BolusFromWatch)).thenReturn(true)
         val uri = createUri(mapOf("carbs" to "12"))
         assertEquals("", clientPlugin().onPostCarbs(uri))
         assertEquals("The Garmin watch sent 12 g of carbs. This phone is a client, so they were not entered. Enter them in AAPS.", postedNotice())

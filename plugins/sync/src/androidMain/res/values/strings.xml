@@ -235,7 +235,10 @@
 
     <string name="wear_action_running_mode_title">Running mode</string>
 
+    <string name="garmin_command_key">Garmin remote control PIN (8–16 digits)</string>
+    <string name="garmin_command_key_summary">Digits only, 8–16. Unlocks temp targets and scenes from the watch; carbs and bolus also need the switch below. Never sent to the watch: type the same PIN into the watch app.</string>
     <string name="garmin_request_key">Request Key</string>
+    <string name="garmin_bolus_from_watch">Allow carbs and bolus from Garmin watch</string>
 
     <!-- SMS Communicator & OTP Authenticator -->
 
