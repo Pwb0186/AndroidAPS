@@ -181,7 +181,25 @@ Commit answers one of these:
   button with eCarbs.
 - Profile switch, running mode, prime/fill.
 
-### 5. Smaller fixes in the Garmin plugin
+### 5. Exercise log from the watch
+A data field can log a workout in AAPS. AAPS stores it as a Careportal **Exercise** event.
+You see it in the graph and in the treatments list, and it goes to Nightscout. It does not
+change any dosing.
+
+`GET /exercise?start=<epoch seconds>&duration=<minutes>&note=<text>`
+
+- It needs no key and no PIN, like `/get`. It only writes a note, no treatment.
+- `start`: at most 2 minutes in the future and at most 24 hours old.
+- `duration`: 1 to 720 minutes.
+- `note`: optional. AAPS trims it and cuts it to 60 characters.
+- If an Exercise event with the same start time exists, AAPS writes nothing and answers
+  `{"ok":true,"text":"Already logged"}`. So the watch can send the same workout again.
+- A new event gives `{"ok":true,"text":"OK"}`. A refusal gives `{"ok":false,"error":"..."}`.
+- On AAPSClient it is refused and AAPS shows a notification, as for `/carbs`. The event
+  would stay on the client and never reach the master.
+- AAPS logs it in the user log with the source "Garmin".
+
+### 6. Smaller fixes in the Garmin plugin
 - If the watch does not answer a message within 20 s, AAPS sends it once more. If a newer
   message waits, the old one is dropped. Before, one lost message blocked the queue for
   that app. Old V1 messages are not sent again.
@@ -227,7 +245,8 @@ Wear OS, the loop, pumps and all other plugins are plain AAPS 4.0.0.
 All changes are in `plugins/sync/src/androidMain/kotlin/app/aaps/plugins/sync/garmin/`
 and the tests next to it. New files: `GarminSteps.kt` (steps), `GarminV2Push.kt`
 (registered push apps), `GarminQuery.kt` (query parser), `GarminBolus.kt`,
-`GarminTempTarget.kt`, `GarminScene.kt` (commands), `GarminKeyGuard.kt` (PIN lockout).
+`GarminTempTarget.kt`, `GarminScene.kt` (commands), `GarminKeyGuard.kt` (PIN lockout),
+`GarminExercise.kt` (exercise log).
 
 ## Credits
 - The Garmin plugin is by the AAPS developers.

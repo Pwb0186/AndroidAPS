@@ -68,14 +68,14 @@ import kotlin.reflect.KClass
 /** Support communication with Garmin devices.
  *
  * This plugin supports sending glucose values to Garmin devices and receiving
- * carbs, heart rate, steps, pump disconnect events, temp targets, boluses and scenes from the device. It communicates
+ * carbs, heart rate, steps, pump disconnect events, temp targets, boluses, scenes and exercise from the device. It communicates
  * via HTTP on localhost or Garmin's native CIQ library.
  *
  * On a client it only shows values: carbs and pump connect or disconnect from the
  * watch are refused there, see [refuseOnClient].
  * Push-to-pull (the registry of watch apps and the push throttle) is in GarminV2Push,
  * steps are in GarminSteps, temp targets from the watch are in GarminTempTarget, boluses in
- * GarminBolus, scenes in GarminScene.
+ * GarminBolus, scenes in GarminScene, exercise in GarminExercise.
  */
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
 @IntKey(370)
@@ -117,6 +117,13 @@ class GarminPlugin(
     /** Step counts from the watch (/get?steps=...). See GarminSteps.kt. */
     @VisibleForTesting
     val garminSteps = GarminSteps(aapsLogger, sp, loopHub, { clock })
+
+    /** Workout from the watch, stored as a Careportal Exercise event (/exercise). See GarminExercise.kt. */
+    @VisibleForTesting
+    val garminExercise = GarminExercise(
+        aapsLogger, persistenceLayer, { loopHub.glucoseUnit }, { config.AAPSCLIENT },
+        { refuseOnClient(rh.gs(SyncStrings.garmin_exercise_not_on_client)) }
+    ) { clock.millis() }
 
     /** Temp target from the watch (/tt/prepare, /tt/commit). See GarminTempTarget.kt. */
     @VisibleForTesting
@@ -317,6 +324,8 @@ class GarminPlugin(
                 registerEndpoint("/scene/prepare", requestHandler(garminScene::prepare, keyRequired = true))
                 registerEndpoint("/scene/commit", requestHandler(garminScene::commit, keyRequired = true))
                 registerEndpoint("/scene/stop", requestHandler(garminScene::stop, keyRequired = true))
+                // Only a record for graph and Nightscout, no treatment: open like /get.
+                registerEndpoint("/exercise", requestHandler(garminExercise::log))
                 registerEndpoint("/status", requestHandler({
                     garminBolus.status(loopHub.temporaryTarget != null).also {
                         garminScene.addStatus(it)
