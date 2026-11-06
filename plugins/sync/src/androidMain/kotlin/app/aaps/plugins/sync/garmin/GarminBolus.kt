@@ -17,6 +17,7 @@ import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.pump.BolusProgressData
+import app.aaps.core.interfaces.pump.BolusProgressState
 import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.ResourceHelper
@@ -327,13 +328,26 @@ class GarminBolus(
         // The step the pump gives, so the watch cannot pick an amount AAPS would round down.
         addProperty("bolusStep", activePlugin.activePump.bolusStepSize(1.0))
         // Lets the stop screen show how far the bolus has come. Only a bolus: an SMB or priming is not
-        // what the screen waits for. Percent rather than the delivered amount, because some pumps only
-        // report a percent; the watch works out the units from it.
+        // what the screen waits for. The percent is always sent, because some pumps only report a percent.
         // Not after a stop: AAPS then marks the bolus 100 % of the full dose for a few seconds.
         bolusProgressData.state.value?.takeIf { !it.isSMB && !it.isPriming && !it.stopPressed }?.let {
             addProperty("bolusPercent", it.percent.coerceIn(0, 100))
             addProperty("bolusInsulin", it.insulin)
+            deliveredUnits(it)?.let { u -> addProperty("bolusDelivered", u) }
         }
+    }
+
+    /**
+     * The insulin the pump has really given, in U, so the watch need not guess it from percent x total, which
+     * is off by up to a bolus step. A pump driver that reports only a percent leaves [BolusProgressState.delivered]
+     * at 0 while the percent grows (the percent-only update computes it, but a driver may pass the default),
+     * so 0 with a percent above 0 means unknown and the field is left out. Converted by the concentration,
+     * because the pump reports its own units.
+     */
+    private fun deliveredUnits(s: BolusProgressState): Double? {
+        val units = bolusProgressData.ch.fromPump(s.delivered, s.isPriming)
+        if (units.isNaN() || units < 0.0 || (units == 0.0 && s.percent > 0)) return null
+        return Math.round(units * 100.0) / 100.0
     }
 
     private fun watchButtons() =

@@ -16,6 +16,7 @@ import app.aaps.core.interfaces.clientcontrol.FailureReason
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.pump.BolusProgressData
+import app.aaps.core.interfaces.pump.PumpInsulin
 import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.keys.BooleanKey
@@ -466,6 +467,35 @@ class GarminBolusTest : TestBaseWithProfile() {
         val jo = json(bolus.status(ttActive = false).toString())
         assertEquals(25, jo["bolusPercent"].asInt)
         assertEquals(4.0, jo["bolusInsulin"].asDouble, 0.001)
+    }
+
+    @Test
+    fun status_bolusProgress_sendsDeliveredWhenKnown() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        bolusProgressData.start(insulin = 4.0, isSMB = false)
+        bolusProgressData.updateProgress(delivered = PumpInsulin(1.234))
+        val jo = json(bolus.status(ttActive = false).toString())
+        assertEquals(1.23, jo["bolusDelivered"].asDouble, 0.0001)
+        assertEquals(4.0, jo["bolusInsulin"].asDouble, 0.001)
+    }
+
+    @Test
+    fun status_bolusProgress_deliveredZeroAtStartIsKnown() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        bolusProgressData.start(insulin = 4.0, isSMB = false)
+        val jo = json(bolus.status(ttActive = false).toString())
+        assertEquals(0.0, jo["bolusDelivered"].asDouble, 0.0001)
+    }
+
+    @Test
+    fun status_bolusProgress_deliveredMissingWhenUnknown() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        bolusProgressData.start(insulin = 4.0, isSMB = false)
+        // A driver that gives only a percent and the default delivered of 0.
+        bolusProgressData.updateProgress(25, TextRef.Literal(""))
+        val jo = json(bolus.status(ttActive = false).toString())
+        assertEquals(25, jo["bolusPercent"].asInt)
+        assertFalse(jo.has("bolusDelivered"))
     }
 
     @Test
