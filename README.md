@@ -12,12 +12,57 @@ uses push, steps and the extra `/get` fields.
 **Watch app for the commands:** [AAPS Control widget](https://github.com/Pwb0186/aaps-garmin-control-widget),
 a Connect IQ widget that you build and install yourself.
 
-Without a remote control PIN, every command is refused (see [Security](#security)). Then the branch
-only adds push, steps and the extra `/get` fields.
+## In short
 
-## What it adds
+- **Faster watch face.** AAPS tells the watch when there is new data. The watch face shows a
+  new glucose value a few seconds after AAPS has it, not up to 5 minutes later.
+- **More on the watch face.** COB, temp target, loop state and pump status (insulin left and
+  the age of the cannula or pod).
+- **Steps.** The watch face can send your steps to AAPS. You see them in the steps graph,
+  and the Automation trigger "Steps count" can use them.
+- **Commands from the watch.** With the AAPS Control widget you can set a temp target, start
+  or stop a scene, give a Quick Wizard, bolus wizard or treatment, and stop a running bolus.
+  AAPS computes the dose and shows it on the watch. Nothing happens before you confirm.
+- **Exercise log.** A data field can log a workout in AAPS as a Careportal "Exercise" event.
+  It does not change any dosing.
 
-### 1. Push-to-pull for watch faces (V2)
+Commands need a **remote control PIN**. Without it, every command is refused, and the
+branch only adds push, steps and the extra watch face data.
+
+## How to use it
+1. Build the APK from branch `GarminPush+Steps+Control-V4.0.0` the same way as AAPS
+   (see [Building the APK](https://wiki.aaps.app/en/latest/SettingUpAaps/BuildingAaps.html)).
+2. In AAPS, enable **Garmin** under Configuration → Communication. Its settings are under
+   Garmin → Settings.
+3. Install a watch face that uses push or sends steps, for example the
+   ["AAPS Push" watch face](https://github.com/Pwb0186/aaps-garmin-push-watchface).
+   To send steps, turn on "Send steps to AAPS" on the watch face.
+4. Only for commands: set a remote control PIN (8 to 16 digits) in the Garmin settings. If you
+   want carbs and bolus, also turn on "Allow carbs and bolus from Garmin watch". Then install the
+   [AAPS Control widget](https://github.com/Pwb0186/aaps-garmin-control-widget) and type the
+   same PIN into it.
+
+## What is not changed
+V1 watch faces and `/sgv.json` clients work as before. With no push watch face and no AAPS
+key, AAPS does not connect to Garmin Connect, as before.
+
+One change: `/carbs` and `/connect` now need the remote control PIN. `/carbs` also needs the
+"Allow carbs and bolus from Garmin watch" switch. So an old data field that sends carbs or
+a pump disconnect without them is refused.
+Wear OS, the loop, pumps and all other plugins are plain AAPS 4.0.0.
+
+## Tested
+- Used every day with an Omnipod DASH and a Forerunner 955 on AAPS 4.0.0.
+- Host tests:
+```
+./gradlew :plugins:sync:testAndroidHostTest --tests "app.aaps.plugins.sync.garmin.*"
+```
+
+---
+
+# Technical details
+
+## 1. Push-to-pull for watch faces (V2)
 Today a Garmin watch face asks AAPS for data on a timer, so the data can be up to
 5 minutes old. Or AAPS sends all the data over Connect IQ (V1).
 V2 combines the two:
@@ -41,11 +86,20 @@ How it works:
 - AAPS only connects to Garmin Connect when an AAPS key is set (as before) or a push
   watch face has fetched data in the last 15 minutes.
 
-`/get` also returns more fields: `carbsOnBoard`, `temporaryTarget*`, `loopEnabled` and
-`timestamp`. `carbsOnBoard` is left out when AAPS has no COB yet. Then the watch keeps its
-last value and does not show 0.
+### Extra fields in `/get`
+- `carbsOnBoard`, `temporaryTarget*`, `loopEnabled` and `timestamp`. `carbsOnBoard` is left
+  out when AAPS has no COB yet. Then the watch keeps its last value and does not show 0.
 
-### 2. Steps from the watch
+Pump status, when AAPS knows it:
+
+- `reservoir`: insulin left in whole U (U100). Left out when unknown, on AAPSClient, and for
+  a patch pump that only reports "50+" (Omnipod).
+- `reservoirLevel`: 0 normal, 1 warning, 2 critical, with the AAPS status light thresholds.
+- `cannulaChangeSec`: time of the last cannula or pod change, in seconds.
+- `cannulaWarnH` and `cannulaCritH`: hours from the AAPS status light settings. The watch
+  counts the age itself.
+
+## 2. Steps from the watch
 A watch face can send today's step total on `/get` (`steps=<total>`). It reads the total
 from `ActivityMonitor`. AAPS stores the steps in the same way as the Wear OS app. So the steps:
 
@@ -86,21 +140,11 @@ Limit: the watch sends steps about every 5 minutes. The "Steps count" trigger on
 at records from the last 5 minutes. So when the watch answers late or a glucose value is
 missing, the trigger finds no record for a short time.
 
-### 3. Pump status
-`/get` also returns, when AAPS knows it:
-
-- `reservoir`: insulin left in whole U (U100). Left out when unknown, on AAPSClient, and for
-  a patch pump that only reports "50+" (Omnipod).
-- `reservoirLevel`: 0 normal, 1 warning, 2 critical, with the AAPS status light thresholds.
-- `cannulaChangeSec`: time of the last cannula or pod change, in seconds.
-- `cannulaWarnH` and `cannulaCritH`: hours from the AAPS status light settings. The watch
-  counts the age itself.
-
-### 4. Commands from the watch
+## 3. Commands from the watch
 Temp target, scenes, Quick Wizard, bolus wizard, treatment (insulin and/or carbs) and stop
 bolus.
 
-#### How a command works
+### How a command works
 Every command that changes treatment uses two steps, like the Wear OS watch:
 
 1. **Prepare** (`.../prepare`): AAPS checks the request. It computes the dose itself from
@@ -117,7 +161,7 @@ Everything goes through the same AAPS code as the Wear watch: `BatchExecutor`,
 `WizardExecutor` and `SceneActions`. The same limits apply. AAPS logs it with the source
 "Garmin".
 
-#### Security
+### Security
 The HTTP server only listens on `127.0.0.1`, but any app on the phone can call it.
 Therefore:
 
@@ -142,7 +186,7 @@ Therefore:
 - Bolus commands are refused on AAPSClient.
 - Requests with a line over 8 KB, more than 50 headers or a body over 16 KB are refused.
 
-#### Endpoints
+### Endpoints
 All need `key=<remote control PIN>`. Answers are JSON.
 
 | Endpoint | What it does | Needs the switch |
@@ -175,13 +219,13 @@ Commit answers one of these:
   A second commit of an id that was already sent also gets this answer. So does a scene that
   may have started only in part.
 
-#### Not included
+### Not included
 - Insulin from the watch without a confirmation, or a dose correction on the watch.
 - eCarbs with their own amount and time. Use the cake or pizza meal type, or a Quick Wizard
   button with eCarbs.
 - Profile switch, running mode, prime/fill.
 
-### 5. Exercise log from the watch
+## 4. Exercise log from the watch
 A data field can log a workout in AAPS. AAPS stores it as a Careportal **Exercise** event.
 You see it in the graph and in the treatments list, and it goes to Nightscout. It does not
 change any dosing.
@@ -199,7 +243,7 @@ change any dosing.
   would stay on the client and never reach the master.
 - AAPS logs it in the user log with the source "Garmin".
 
-### 6. Smaller fixes in the Garmin plugin
+## 5. Smaller fixes in the Garmin plugin
 - If the watch does not answer a message within 20 s, AAPS sends it once more. If a newer
   message waits, the old one is dropped. Before, one lost message blocked the queue for
   that app. Old V1 messages are not sent again.
@@ -210,36 +254,6 @@ change any dosing.
 - `/get` without heart rate no longer logs "average heart rate 0 BPM 1970-01-01".
 - Heart rate is stored with the end of the measuring period as its time. This is what
   AAPS expects. Before, it was stored 5 minutes too early.
-
-## What is not changed
-V1 watch faces and `/sgv.json` clients work as before. With no push watch face and no AAPS
-key, AAPS does not connect to Garmin Connect, as before.
-
-One change: `/carbs` and `/connect` now need the remote control PIN. `/carbs` also needs the
-"Allow carbs and bolus from Garmin watch" switch. So an old data field that sends carbs or
-a pump disconnect without them is refused.
-Wear OS, the loop, pumps and all other plugins are plain AAPS 4.0.0.
-
-## How to use it
-1. Build the APK from branch `GarminPush+Steps+Control-V4.0.0` the same way as AAPS
-   (see [Building the APK](https://wiki.aaps.app/en/latest/SettingUpAaps/BuildingAaps.html)).
-2. In AAPS, enable **Garmin** under Configuration → Communication. Its settings are under
-   Garmin → Settings.
-3. Install a watch face that uses V2 or sends steps, for example the
-   ["AAPS Push" watch face](https://github.com/Pwb0186/aaps-garmin-push-watchface).
-   To send steps, turn on "Send steps to AAPS" on the watch face.
-4. Only for commands: set a remote control PIN in the Garmin settings. If you want carbs and
-   bolus, turn on "Allow carbs and bolus from Garmin watch". Then install the
-   [AAPS Control widget](https://github.com/Pwb0186/aaps-garmin-control-widget).
-
-## Tested
-- One user uses it every day with an Omnipod DASH and a Forerunner 955. This was on AAPS
-  4.0.0-rc1 with the same Garmin code. On 4.0.0 it is so far tested with the host tests and
-  a short test on the watch.
-- Host tests:
-```
-./gradlew :plugins:sync:testAndroidHostTest --tests "app.aaps.plugins.sync.garmin.*"
-```
 
 ## Files
 All changes are in `plugins/sync/src/androidMain/kotlin/app/aaps/plugins/sync/garmin/`
