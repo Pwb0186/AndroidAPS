@@ -130,18 +130,18 @@ class GarminExerciseTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun duration_limitsAre1To720() {
-        assertRefused("start=$startSec&duration=0", "Duration must be 1 to 720 min")
-        assertRefused("start=$startSec&duration=721")
+    fun duration_limitsAre1To1080() {
+        assertRefused("start=$startSec&duration=0", "Duration must be 1 to 1080 min")
+        assertRefused("start=$startSec&duration=1081")
         assertRefused("start=$startSec&duration=-1")
         assertRefused("start=$startSec&duration=abc")
         assertRefused("start=$startSec", "Missing duration")
     }
 
     @Test
-    fun duration_1And720AreAccepted() {
+    fun duration_1And1080AreAccepted() {
         assertTrue(get("start=$startSec&duration=1")["ok"].asBoolean)
-        assertTrue(get("start=${startSec - 1}&duration=720")["ok"].asBoolean)
+        assertTrue(get("start=${startSec - 1}&duration=1080")["ok"].asBoolean)
     }
 
     @Test

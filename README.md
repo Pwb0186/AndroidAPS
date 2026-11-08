@@ -190,7 +190,7 @@ change any dosing.
 
 - It needs no key and no PIN, like `/get`. It only writes a note, no treatment.
 - `start`: at most 2 minutes in the future and at most 24 hours old.
-- `duration`: 1 to 720 minutes.
+- `duration`: 1 to 1080 minutes (18 hours, a full Ironman).
 - `note`: optional. AAPS trims it and cuts it to 60 characters.
 - If an Exercise event with the same start time exists, AAPS writes nothing and answers
   `{"ok":true,"text":"Already logged"}`. So the watch can send the same workout again.
