@@ -47,8 +47,9 @@ class GarminExercise(
         @VisibleForTesting
         const val MAX_AGE_MS = 24 * 60 * 60_000L
 
+        /** Up to 18 h covers a full Ironman (cut-off 17 h); a forgotten stop cannot log a whole day. */
         @VisibleForTesting
-        val DURATION_MIN = 1..720
+        val DURATION_MIN = 1..1080
 
         /** The Careportal note field is short, and a long note does not fit on the graph. */
         @VisibleForTesting
@@ -70,7 +71,7 @@ class GarminExercise(
         if (startMs > nowMs + MAX_FUTURE_MS) return error("Start is in the future")
         if (startMs < nowMs - MAX_AGE_MS) return error("Start is more than 24 h ago")
         val duration = uri.queryParameter("duration")?.toIntOrNull() ?: return error("Missing duration")
-        if (duration !in DURATION_MIN) return error("Duration must be 1 to 720 min")
+        if (duration !in DURATION_MIN) return error("Duration must be 1 to 1080 min")
         val note = cleanNote(uri.queryParameter("note"))
 
         val event = TE(
