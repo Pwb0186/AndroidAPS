@@ -15,7 +15,7 @@ a Connect IQ widget that you build and install yourself.
 ## In short
 
 - **Faster watch face.** AAPS tells the watch when there is new data. The watch face shows a
-  new glucose value a few seconds after AAPS has it, not up to 5 minutes later.
+  new glucose value a few seconds after AAPS has it.
 - **More on the watch face.** COB, temp target, loop state and pump status (insulin left and
   the age of the cannula or pod).
 - **Steps.** The watch face can send your steps to AAPS. You see them in the steps graph,
@@ -43,8 +43,8 @@ branch only adds push, steps and the extra watch face data.
    same PIN into it.
 
 ## What is not changed
-V1 watch faces and `/sgv.json` clients work as before. With no push watch face and no AAPS
-key, AAPS does not connect to Garmin Connect, as before.
+V1 watch faces and `/sgv.json` clients work as before. If no watch face uses push and no AAPS
+key is set, AAPS does not connect to Garmin Connect. This is the same as before.
 
 One change: `/carbs` and `/connect` now need the remote control PIN. `/carbs` also needs the
 "Allow carbs and bolus from Garmin watch" switch. So an old data field that sends carbs or
