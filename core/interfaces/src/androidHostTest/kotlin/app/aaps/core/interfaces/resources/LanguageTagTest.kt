@@ -45,6 +45,7 @@ class LanguageTagTest {
         assertThat(LanguageTag.of("pt_BR")).isEqualTo("pt-BR")
         assertThat(LanguageTag.of("zh_TW")).isEqualTo("zh-TW")
         assertThat(LanguageTag.of("zh_CN")).isEqualTo("zh-CN")
+        assertThat(LanguageTag.of("en_GB")).isEqualTo("en-GB")
     }
 
     @Test

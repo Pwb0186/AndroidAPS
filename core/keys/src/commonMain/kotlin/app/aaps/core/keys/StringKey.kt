@@ -53,6 +53,8 @@ enum class StringKey(
         entriesRefs = mapOf(
             "default" to KeysStrings.lang_default,
             "en" to KeysStrings.lang_en,
+            // English text with British dates (dd/MM/yyyy): no strings of its own, Android falls back to the English ones.
+            "en_GB" to KeysStrings.lang_en_gb,
             "af" to KeysStrings.lang_af,
             "bg" to KeysStrings.lang_bg,
             "cs" to KeysStrings.lang_cs,

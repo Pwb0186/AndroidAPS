@@ -273,6 +273,7 @@
     <string name="pref_title_language">Language</string>
     <string name="lang_default">System default</string>
     <string name="lang_en">English</string>
+    <string name="lang_en_gb">English (UK)</string>
     <string name="lang_af">Afrikaans</string>
     <string name="lang_bg">Bulgarian</string>
     <string name="lang_cs">Czech</string>
