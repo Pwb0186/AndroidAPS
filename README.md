@@ -87,8 +87,13 @@ How it works:
   watch face has fetched data in the last 15 minutes.
 
 ### Extra fields in `/get`
-- `carbsOnBoard`, `temporaryTarget*`, `loopEnabled` and `timestamp`. `carbsOnBoard` is left
+- `carbsOnBoard`, `temporaryTarget*` and `timestamp`. `carbsOnBoard` is left
   out when AAPS has no COB yet. Then the watch keeps its last value and does not show 0.
+- `runningMode`: the AAPS running mode, as in the Wear app: `CLOSED_LOOP`, `OPEN_LOOP`,
+  `CLOSED_LOOP_LGS`, `DISABLED_LOOP`, `SUPER_BOLUS`, `DISCONNECTED_PUMP`, `SUSPENDED_BY_PUMP`,
+  `SUSPENDED_BY_USER` or `SUSPENDED_BY_DST`. The loop runs in the first three.
+- `runningModeEnd`: when a temporary mode ends, as Unix time in seconds. Left out for a mode without an end.
+  It replaces `loopEnabled`, which is no longer sent.
 
 Pump status, when AAPS knows it:
 
