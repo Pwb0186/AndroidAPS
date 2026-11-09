@@ -96,9 +96,9 @@ class LoopHubImpl(
     /** Returns true if the pump is connected. */
     override val isConnected: Boolean get() = runBlocking { loop.runningMode() } != RM.Mode.DISCONNECTED_PUMP
 
-    /** Returns true if the loop is enabled and actually running. */
-    override val isLoopEnabled: Boolean
-        get() = loop.isEnabled() && runBlocking { loop.runningMode() }.isLoopRunning()
+    /** Returns the running mode record in force now (mode, start and planned duration). */
+    override val runningMode: RM
+        get() = runBlocking { loop.runningModeRecord() }
 
     /** Returns true if the current profile is set of a limited amount of time. */
     override val isTemporaryProfile: Boolean

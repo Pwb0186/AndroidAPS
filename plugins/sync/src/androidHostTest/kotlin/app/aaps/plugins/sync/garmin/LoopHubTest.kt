@@ -390,19 +390,12 @@ class LoopHubTest : TestBase() {
     }
 
     @Test
-    fun testIsLoopEnabled() = runTest {
-        whenever(loop.isEnabled()).thenReturn(true)
-        whenever(loop.runningMode()).thenReturn(RM.Mode.CLOSED_LOOP)
-        assertEquals(true, loopHub.isLoopEnabled)
-        verify(loop).isEnabled()
-        verify(loop).runningMode()
-    }
-
-    @Test
-    fun testIsLoopEnabled_PluginDisabled() = runTest {
-        whenever(loop.isEnabled()).thenReturn(false)
-        assertFalse(loopHub.isLoopEnabled)
-        verify(loop).isEnabled()
+    fun testRunningMode() = runTest {
+        // The record is passed on as is, so mode and duration reach the /get answer unchanged.
+        val record = RM(timestamp = 5_000L, mode = RM.Mode.DISCONNECTED_PUMP, duration = 1_800_000L)
+        whenever(loop.runningModeRecord()).thenReturn(record)
+        assertEquals(record, loopHub.runningMode)
+        verify(loop).runningModeRecord()
     }
 
     @Test

@@ -2,6 +2,7 @@ package app.aaps.plugins.sync.garmin
 
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
+import app.aaps.core.data.model.RM
 import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.interfaces.db.PersistenceLayer
@@ -66,6 +67,9 @@ class GarminPluginTest : TestBaseWithProfile() {
     private val spStore = mutableMapOf<String, Any>()
     private val clock = Clock.fixed(Instant.ofEpochMilli(10_000), ZoneId.of("UTC"))
 
+    private fun runningModeRecord(mode: RM.Mode, timestamp: Long = 0L, duration: Long = 0L) =
+        RM(timestamp = timestamp, mode = mode, duration = duration)
+
     @BeforeEach
     fun setup() {
         whenever(garminSp.getString(any<String>(), any<String>())).thenAnswer { i ->
@@ -76,6 +80,8 @@ class GarminPluginTest : TestBaseWithProfile() {
         gp = GarminPlugin(aapsLogger, rh, preferences, garminSp, context, loopHub, persistenceLayer, config, notificationManager, mock(), mock(), mock())
         gp.clock = clock
         whenever(loopHub.currentProfileName).thenReturn("Default")
+        // LoopHub is a mock, so every /get needs a running mode record to read.
+        whenever(loopHub.runningMode).thenReturn(runningModeRecord(RM.Mode.CLOSED_LOOP))
         whenever(preferences.get(GarminIntKey.LocalHttpPort)).thenReturn(28890)
         whenever(preferences.get(any<IntNonKey>())).thenAnswer { i -> 0 }
         whenever(preferences.get(any<BooleanNonKey>())).thenAnswer { i -> false }
@@ -95,7 +101,7 @@ class GarminPluginTest : TestBaseWithProfile() {
         verify(loopHub, atMost(3)).lowGlucoseMark
         verify(loopHub, atMost(3)).highGlucoseMark
         verify(loopHub, atMost(3)).temporaryTarget
-        verify(loopHub, atMost(3)).isLoopEnabled
+        verify(loopHub, atMost(3)).runningMode
         verify(loopHub, atMost(3)).pumpStatus
         verifyNoMoreInteractions(loopHub)
     }
@@ -383,7 +389,7 @@ class GarminPluginTest : TestBaseWithProfile() {
                 """"remainingInsulin":3.14,"remainingBasalInsulin":2.71,"carbsOnBoard":0.0,""" +
                 """"lowGlucoseMark":70,"highGlucoseMark":130,""" +
                 """"glucoseUnit":"mmoll","temporaryBasalRate":0.8,""" +
-                """"temporaryTargetActive":false,"connected":true,"loopEnabled":false,""" +
+                """"temporaryTargetActive":false,"connected":true,"runningMode":"CLOSED_LOOP",""" +
                 """"timestamp":10,"profile":"D"}""",
             result.toString()
         )
@@ -457,7 +463,7 @@ class GarminPluginTest : TestBaseWithProfile() {
             """{"encodedGlucose":"/wS6AQ==",""" +
                 """"remainingInsulin":3.14,"remainingBasalInsulin":0.0,"carbsOnBoard":0.0,""" +
                 """"glucoseUnit":"mmoll","temporaryBasalRate":0.8,""" +
-                """"temporaryTargetActive":false,"connected":true,"loopEnabled":false,""" +
+                """"temporaryTargetActive":false,"connected":true,"runningMode":"CLOSED_LOOP",""" +
                 """"timestamp":10,"profile":"D"}""",
             result.toString()
         )
@@ -726,6 +732,43 @@ class GarminPluginTest : TestBaseWithProfile() {
         Truth.assertThat(result.toString()).doesNotContain("carbsOnBoard")
         verifyNoInteractions(messenger)
         verify(loopHub).carbsOnboard
+        verifyGetBloodGlucoseReads()
+    }
+
+    @Test
+    fun onGetBloodGlucose_RunningModeWithoutEnd() {
+        // A permanent mode has no end, so only the mode name is sent. The old flag is gone.
+        val result = gp.onGetBloodGlucose(createUri(mapOf("appId" to appId))).toString()
+        Truth.assertThat(result).contains(""""runningMode":"CLOSED_LOOP""")
+        Truth.assertThat(result).doesNotContain("runningModeEnd")
+        Truth.assertThat(result).doesNotContain("loopEnabled")
+        verify(loopHub).runningMode
+        verifyGetBloodGlucoseReads()
+    }
+
+    @Test
+    fun onGetBloodGlucose_RunningModeEndInEpochSeconds() {
+        // 5000 s start + 1800 s duration; the end is sent in seconds like the other timestamps.
+        whenever(loopHub.runningMode).thenReturn(
+            runningModeRecord(RM.Mode.DISCONNECTED_PUMP, timestamp = 5_000_000L, duration = 1_800_000L)
+        )
+        val result = gp.onGetBloodGlucose(createUri(mapOf("appId" to appId))).toString()
+        Truth.assertThat(result).contains(""""runningMode":"DISCONNECTED_PUMP","runningModeEnd":6800""")
+        Truth.assertThat(result).doesNotContain("loopEnabled")
+        verify(loopHub).runningMode
+        verifyGetBloodGlucoseReads()
+    }
+
+    @Test
+    fun onGetBloodGlucose_OpenEndedModeHasNoEnd() {
+        // A pump suspend is stored with Int.MAX_VALUE minutes; Wear treats it as open-ended and so do we.
+        whenever(loopHub.runningMode).thenReturn(
+            runningModeRecord(RM.Mode.SUSPENDED_BY_PUMP, timestamp = 5_000_000L, duration = Int.MAX_VALUE * 60_000L)
+        )
+        val result = gp.onGetBloodGlucose(createUri(mapOf("appId" to appId))).toString()
+        Truth.assertThat(result).contains(""""runningMode":"SUSPENDED_BY_PUMP""")
+        Truth.assertThat(result).doesNotContain("runningModeEnd")
+        verify(loopHub).runningMode
         verifyGetBloodGlucoseReads()
     }
 
