@@ -32,6 +32,7 @@ import app.aaps.plugins.sync.SyncStrings
 import app.aaps.plugins.sync.garmin.keys.GarminBooleanKey
 import app.aaps.plugins.sync.garmin.keys.GarminIntKey
 import app.aaps.plugins.sync.garmin.keys.GarminStringKey
+import app.aaps.plugins.sync.wear.wearintegration.endTimeForWatch
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import dev.zacsweers.metro.AppScope
@@ -565,7 +566,13 @@ class GarminPlugin(
             jo.addProperty("cannulaCritH", ps.cannulaCritHours)
         }
         jo.addProperty("connected", loopHub.isConnected)
-        jo.addProperty("loopEnabled", loopHub.isLoopEnabled)
+        // Same record and end-time rule as Wear, so watch and phone agree. The mode name tells the
+        // watch more than the old on/off flag (suspended, disconnected and disabled differ).
+        val runningMode = loopHub.runningMode
+        jo.addProperty("runningMode", runningMode.mode.name)
+        // endTimeForWatch is null for a permanent or open-ended mode (a pump suspend is stored with a
+        // huge duration), so the field is left out and the watch shows no bogus remaining time.
+        runningMode.endTimeForWatch()?.let { jo.addProperty("runningModeEnd", it / 1000) }
         jo.addProperty("timestamp", clock.instant().epochSecond)
         jo.addProperty("profile", loopHub.currentProfileName.first().toString())
         return jo.toString()
