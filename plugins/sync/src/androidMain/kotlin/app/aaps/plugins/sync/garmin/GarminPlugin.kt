@@ -320,7 +320,7 @@ class GarminPlugin(
                 registerEndpoint("/bolus/commit", requestHandler(garminBolus::commit, keyRequired = true))
                 registerEndpoint("/bolus/discard", requestHandler(garminBolus::discard, keyRequired = true))
                 // Stop still works with the right PIN while wrong PINs block the other commands.
-                registerEndpoint("/bolus/stop", requestHandler(garminBolus::stop, keyRequired = true, allowWhileLocked = true))
+                registerEndpoint("/bolus/stop", requestHandler(garminBolus::stop, keyRequired = true, allowWhileLocked = true, stopSlot = true))
                 registerEndpoint("/scene/list", requestHandler(garminScene::list, keyRequired = true))
                 registerEndpoint("/scene/prepare", requestHandler(garminScene::prepare, keyRequired = true))
                 registerEndpoint("/scene/commit", requestHandler(garminScene::commit, keyRequired = true))
@@ -470,12 +470,14 @@ class GarminPlugin(
     }
 
     @VisibleForTesting
-    fun requestHandler(action: (URI) -> CharSequence, keyRequired: Boolean = false, allowWhileLocked: Boolean = false) = { caller: SocketAddress, uri: URI, _: String? ->
+    fun requestHandler(
+        action: (URI) -> CharSequence, keyRequired: Boolean = false, allowWhileLocked: Boolean = false, stopSlot: Boolean = false
+    ) = { caller: SocketAddress, uri: URI, _: String? ->
         // Reading (/get, /sgv.json) is open: any app on the phone could read the same values
         // elsewhere, and the watch faces and data fields then need no key. Everything that
         // changes treatment (/carbs, /connect, temp target, bolus, scenes) needs the remote control PIN,
         // and is refused while it is not set, because any app on the phone can call localhost.
-        val check = if (keyRequired) keyGuard.check(garminCommandKey, getQueryParameter(uri, "key"), allowWhileLocked)
+        val check = if (keyRequired) keyGuard.check(garminCommandKey, getQueryParameter(uri, "key"), allowWhileLocked, stopSlot)
         else GarminKeyGuard.Result.OK
         when (check) {
             GarminKeyGuard.Result.NO_KEY     -> {
