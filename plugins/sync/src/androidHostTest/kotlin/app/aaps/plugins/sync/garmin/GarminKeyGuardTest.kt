@@ -41,8 +41,21 @@ class GarminKeyGuardTest {
     fun locked_onlyRightKeyWithAllowWhileLocked_passes_untilLockoutEnds() {
         repeat(GarminKeyGuard.MAX_FAILURES) { guard.check(key, "x") }
         assertEquals(Result.OK, guard.check(key, key, allowWhileLocked = true))
+        nowMs += GarminKeyGuard.LOCKED_CHECK_MS
         assertEquals(Result.LOCKED, guard.check(key, "x", allowWhileLocked = true))
         nowMs += GarminKeyGuard.LOCKOUT_MS
         assertEquals(Result.OK, guard.check(key, key))
+    }
+
+    @Test
+    fun locked_pinComparedAtMostOncePerInterval() {
+        repeat(GarminKeyGuard.MAX_FAILURES) { guard.check(key, "x") }
+        // A wrong guess uses the one comparison; the right PIN right after it is not even compared.
+        assertEquals(Result.LOCKED, guard.check(key, "x", allowWhileLocked = true))
+        assertEquals(Result.LOCKED, guard.check(key, key, allowWhileLocked = true))
+        nowMs += GarminKeyGuard.LOCKED_CHECK_MS - 1
+        assertEquals(Result.LOCKED, guard.check(key, key, allowWhileLocked = true))
+        nowMs += 1
+        assertEquals(Result.OK, guard.check(key, key, allowWhileLocked = true))
     }
 }

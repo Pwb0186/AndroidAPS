@@ -9,7 +9,9 @@ import java.security.MessageDigest
  * bolus. A short pause per wrong PIN does not stop an app that sends many requests at once, so wrong
  * PINs are counted for all requests together: after [MAX_FAILURES] wrong PINs, commands are refused
  * for [LOCKOUT_MS], also with the right PIN. Only stop bolus still works with the right PIN then,
- * so another app cannot lock the user out of stopping a bolus.
+ * so another app cannot lock the user out of stopping a bolus. Wrong PINs are not counted while
+ * locked, so the PIN is compared at most once per [LOCKED_CHECK_MS] then: otherwise another app
+ * could start the lockout itself and then guess freely, because the answer tells a right PIN apart.
  */
 class GarminKeyGuard(private val now: () -> Long) {
 
@@ -24,6 +26,7 @@ class GarminKeyGuard(private val now: () -> Long) {
         fun isPinSet(pin: String): Boolean = PIN.matches(pin)
         const val MAX_FAILURES = 5
         const val LOCKOUT_MS = 15 * 60 * 1000L
+        const val LOCKED_CHECK_MS = 2000L
     }
 
     private val lock = Any()
@@ -31,11 +34,18 @@ class GarminKeyGuard(private val now: () -> Long) {
      *  get [MAX_FAILURES] - 1 tries between each request of the watch. */
     private val failures = ArrayDeque<Long>()
     private var lockedUntil = 0L
+    /** When the PIN was last compared while locked; see [LOCKED_CHECK_MS]. */
+    private var lastLockedCheck = 0L
 
     fun check(expected: String, given: String?, allowWhileLocked: Boolean = false): Result = synchronized(lock) {
         if (!isPinSet(expected)) return Result.NO_KEY
         val locked = now() < lockedUntil
         if (locked && !allowWhileLocked) return Result.LOCKED
+        if (locked) {
+            // For all requests together: 15 min then allows about 450 guesses, far too few for 8 digits.
+            if (now() - lastLockedCheck < LOCKED_CHECK_MS) return Result.LOCKED
+            lastLockedCheck = now()
+        }
         // Constant time, so the time of the answer tells nothing about how much of the PIN was right.
         val right = given != null && MessageDigest.isEqual(expected.toByteArray(), given.toByteArray())
         if (right) return Result.OK
