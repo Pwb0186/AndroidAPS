@@ -58,4 +58,13 @@ class GarminKeyGuardTest {
         nowMs += 1
         assertEquals(Result.OK, guard.check(key, key, allowWhileLocked = true))
     }
+
+    @Test
+    fun locked_stopHasItsOwnSlot() {
+        repeat(GarminKeyGuard.MAX_FAILURES) { guard.check(key, "x") }
+        // A /status poll just used its slot; a stop right after it is still compared.
+        assertEquals(Result.OK, guard.check(key, key, allowWhileLocked = true))
+        assertEquals(Result.OK, guard.check(key, key, allowWhileLocked = true, stopSlot = true))
+        assertEquals(Result.LOCKED, guard.check(key, key, allowWhileLocked = true, stopSlot = true))
+    }
 }

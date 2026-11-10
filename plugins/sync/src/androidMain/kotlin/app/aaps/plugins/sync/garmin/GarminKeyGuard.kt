@@ -12,6 +12,7 @@ import java.security.MessageDigest
  * so another app cannot lock the user out of stopping a bolus. Wrong PINs are not counted while
  * locked, so the PIN is compared at most once per [LOCKED_CHECK_MS] then: otherwise another app
  * could start the lockout itself and then guess freely, because the answer tells a right PIN apart.
+ * Stop has its own such slot, so the stop screen's /status polling cannot make a stop wait.
  */
 class GarminKeyGuard(private val now: () -> Long) {
 
@@ -34,17 +35,19 @@ class GarminKeyGuard(private val now: () -> Long) {
      *  get [MAX_FAILURES] - 1 tries between each request of the watch. */
     private val failures = ArrayDeque<Long>()
     private var lockedUntil = 0L
-    /** When the PIN was last compared while locked; see [LOCKED_CHECK_MS]. */
+    /** When the PIN was last compared while locked; see [LOCKED_CHECK_MS]. Stop has its own. */
     private var lastLockedCheck = 0L
+    private var lastLockedStopCheck = 0L
 
-    fun check(expected: String, given: String?, allowWhileLocked: Boolean = false): Result = synchronized(lock) {
+    fun check(expected: String, given: String?, allowWhileLocked: Boolean = false, stopSlot: Boolean = false): Result = synchronized(lock) {
         if (!isPinSet(expected)) return Result.NO_KEY
         val locked = now() < lockedUntil
         if (locked && !allowWhileLocked) return Result.LOCKED
         if (locked) {
             // For all requests together: 15 min then allows about 450 guesses, far too few for 8 digits.
-            if (now() - lastLockedCheck < LOCKED_CHECK_MS) return Result.LOCKED
-            lastLockedCheck = now()
+            val last = if (stopSlot) lastLockedStopCheck else lastLockedCheck
+            if (now() - last < LOCKED_CHECK_MS) return Result.LOCKED
+            if (stopSlot) lastLockedStopCheck = now() else lastLockedCheck = now()
         }
         // Constant time, so the time of the answer tells nothing about how much of the PIN was right.
         val right = given != null && MessageDigest.isEqual(expected.toByteArray(), given.toByteArray())
