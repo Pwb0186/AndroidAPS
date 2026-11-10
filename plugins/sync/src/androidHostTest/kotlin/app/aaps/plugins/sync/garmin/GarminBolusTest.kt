@@ -432,7 +432,7 @@ class GarminBolusTest : TestBaseWithProfile() {
     @Test
     fun stop_cancelsQueuedAndRunningBolus() {
         whenever(garminCommandQueue.bolusInQueue()).thenReturn(true)
-        assertEquals("Bolus stopped", json(bolus.stop(uri("")))["text"].asString)
+        assertEquals("Stop sent", json(bolus.stop(uri("")))["text"].asString)
         verify(garminCommandQueue).cancelAllBoluses(anyOrNull())
     }
 

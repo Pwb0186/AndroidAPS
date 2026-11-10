@@ -301,11 +301,12 @@ class GarminBolus(
         if (config.AAPSCLIENT) return error("Not on AAPSClient")
         val running = bolusRunning()
         // Clears the queued boluses and stops the pump (off this thread), like the stop button in AAPS.
+        // "Sent", not "stopped": the pump only gets the stop later, off this thread.
         commandQueue.cancelAllBoluses(null)
         aapsLogger.info(LTag.GARMIN, "stop bolus from the watch, bolus was running: $running")
         return JsonObject().apply {
             addProperty("ok", true)
-            addProperty("text", if (running) "Bolus stopped" else "No bolus running")
+            addProperty("text", if (running) "Stop sent" else "No bolus running")
         }.toString()
     }
 
