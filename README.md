@@ -185,6 +185,8 @@ Therefore:
 - While locked, every command is refused (HTTP 429), even with the right PIN.
 - Except stop bolus and `/status`: they are never locked. With the right PIN you can always
   stop a running bolus from the watch and see how far it has come.
+  While locked, they check the PIN at most once every 2 seconds, so the lock cannot be used
+  to guess the PIN.
 - A bolus is refused while another bolus or SMB is queued or running.
 - A commit is refused when a bolus or SMB was stored after AAPS started to compute the
   waiting dose.
