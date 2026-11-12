@@ -460,6 +460,16 @@ class GarminBolusTest : TestBaseWithProfile() {
     }
 
     @Test
+    fun status_smbRunning() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        whenever(garminCommandQueue.bolusInQueue()).thenReturn(true)
+        whenever(garminCommandQueue.isRunning(Command.CommandType.SMB_BOLUS)).thenReturn(true)
+        val jo = json(bolus.status(ttActive = false).toString())
+        assertTrue(jo["bolusRunning"].asBoolean)
+        assertTrue(jo["smbRunning"].asBoolean)
+    }
+
+    @Test
     fun status_bolusProgress() {
         whenever(quickWizard.list()).thenReturn(arrayListOf())
         bolusProgressData.start(insulin = 4.0, isSMB = false)

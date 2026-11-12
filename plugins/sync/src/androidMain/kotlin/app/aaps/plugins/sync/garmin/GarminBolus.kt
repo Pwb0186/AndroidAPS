@@ -317,6 +317,9 @@ class GarminBolus(
     fun status(ttActive: Boolean): JsonObject = JsonObject().apply {
         addProperty("ok", true)
         addProperty("bolusRunning", bolusRunning())
+        // An SMB from the loop also counts as running above (a new bolus has to wait for it), but the watch
+        // should not open its stop screen for it: an SMB is short, and the watch did not start it.
+        addProperty("smbRunning", commandQueue.isRunning(Command.CommandType.SMB_BOLUS))
         addProperty("ttActive", ttActive)
         addProperty("qwCount", watchButtons().size)
         // So the watch shows only what can be used and its pickers stop at the limits AAPS applies anyway.
