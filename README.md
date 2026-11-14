@@ -201,7 +201,7 @@ All need `key=<remote control PIN>`. Answers are JSON.
 
 | Endpoint | What it does | Needs the switch |
 |---|---|---|
-| `/status` | `bolusRunning` (also true during an SMB), `smbRunning` (an SMB from the loop is being given), `ttActive`, `qwCount`, `sceneActive`, `sceneName`, `sceneCount`, `bolusEnabled`, `carbsEnabled`, `maxBolus`, `maxCarbs`, `bolusStep`, `wizardPercent`, `units`, and while a bolus runs `bolusPercent`, `bolusInsulin` and, when AAPS knows it, `bolusDelivered` (the units really given, in U with 2 decimals; not after it was stopped) | no |
+| `/status` | `bolusRunning` (also true during an SMB), `smbRunning` (an SMB from the loop is being given), `ttActive`, `qwCount`, `sceneActive`, `sceneName`, `sceneCount`, `bolusEnabled`, `carbsEnabled`, `maxBolus`, `maxCarbs`, `bolusStep`, `wizardPercent`, `units`, and while a bolus runs `bolusPercent`, `bolusInsulin` and, when AAPS knows it, `bolusDelivered` (the units really given, in U with 2 decimals; not after it was stopped); for 20 min after a bolus from the watch also `watchBolusId` (its id), `watchBolusRecorded` (the pump got it) and `watchBolusU` (what the pump really gave, also after a stop or a pod fault) | no |
 | `/tt/prepare?preset=activity\|eating\|hypo\|cancel` | temp target from the AAPS presets; cancel only when one is running | no |
 | `/tt/prepare?preset=manual&target=X&duration=N` | manual temp target in the AAPS unit (mmol/L with a dot, or mg/dL), within the AAPS limits, 5-720 min | no |
 | `/tt/commit?id=` | sets it | no |

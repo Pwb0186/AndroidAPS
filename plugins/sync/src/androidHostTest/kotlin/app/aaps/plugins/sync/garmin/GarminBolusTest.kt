@@ -516,6 +516,55 @@ class GarminBolusTest : TestBaseWithProfile() {
         assertFalse(jo.has("bolusPercent"))
     }
 
+    private fun bs(amount: Double, type: BS.Type = BS.Type.NORMAL, valid: Boolean = true): BS = mock<BS>().also {
+        whenever(it.amount).thenReturn(amount)
+        whenever(it.type).thenReturn(type)
+        whenever(it.isValid).thenReturn(valid)
+    }
+
+    private fun commitWatchBolus(): Long {
+        bolus.prepareWizard(uri("carbs=40"))
+        val at = nowMs
+        assertTrue(json(bolus.commit(uri("id=$preparedId")))["ok"].asBoolean)
+        return at
+    }
+
+    @Test
+    fun status_watchBolus_amountThePumpGave() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        val at = commitWatchBolus()
+        // An SMB in between is not the watch bolus; a stopped bolus has its delivered amount in the record.
+        // The list is built first: stubbing the BS mocks inside thenReturn() would leave Mockito half done.
+        val records = listOf(bs(0.3, BS.Type.SMB), bs(1.354))
+        runBlocking { whenever(garminPersistenceLayer.getBolusesFromTime(at, true)).thenReturn(records) }
+        val jo = json(bolus.status(ttActive = false).toString())
+        assertEquals(preparedId.toString(), jo["watchBolusId"].asString)
+        assertTrue(jo["watchBolusRecorded"].asBoolean)
+        assertEquals(1.35, jo["watchBolusU"].asDouble, 0.0001)
+    }
+
+    @Test
+    fun status_watchBolus_noRecordWhenThePumpNeverGotIt() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        val at = commitWatchBolus()
+        val records = listOf(bs(2.0, valid = false))
+        runBlocking { whenever(garminPersistenceLayer.getBolusesFromTime(at, true)).thenReturn(records) }
+        val jo = json(bolus.status(ttActive = false).toString())
+        assertFalse(jo["watchBolusRecorded"].asBoolean)
+        assertFalse(jo.has("watchBolusU"))
+    }
+
+    @Test
+    fun status_watchBolus_onlyForAWhileAndOnlyAfterACommit() {
+        whenever(quickWizard.list()).thenReturn(arrayListOf())
+        assertFalse(json(bolus.status(ttActive = false).toString()).has("watchBolusId"))
+        commitWatchBolus()
+        runBlocking { whenever(garminPersistenceLayer.getBolusesFromTime(any(), any())).thenReturn(emptyList()) }
+        assertTrue(json(bolus.status(ttActive = false).toString()).has("watchBolusId"))
+        nowMs += GarminBolus.COMMITTED_SHOWN_MS + 1
+        assertFalse(json(bolus.status(ttActive = false).toString()).has("watchBolusId"))
+    }
+
     @Test
     fun status_nothingRunning() {
         whenever(quickWizard.list()).thenReturn(arrayListOf())
