@@ -91,6 +91,10 @@ class GarminBolus(
         private const val MAX_CARBS_FROM_WATCH = 1000
 
         private const val UNKNOWN = "Unknown - do NOT repeat, check AAPS"
+
+        /** How long /status tells about the last watch bolus: as long as the watch's stop screen can be open. */
+        @VisibleForTesting
+        const val COMMITTED_SHOWN_MS = 20 * 60_000L
     }
 
     /**
@@ -118,6 +122,11 @@ class GarminBolus(
 
     /** The last id sent to AAPS: a second commit of it answers "unknown", not "nothing given". */
     private var sentId: Long? = null
+
+    /** The last bolus sent to AAPS from the watch, and when, so /status can say what the pump really gave. */
+    private class Committed(val id: Long, val atMs: Long)
+
+    private var committed: Committed? = null
 
     fun prepareWizard(uri: URI): CharSequence {
         // Before AAPS reads BG, IOB and boluses: a bolus stored while it computes is newer than this.
@@ -249,7 +258,11 @@ class GarminBolus(
                 .maxOfOrNull { it.timestamp }
         }
         if (newest != null && newest > p.atMs) return dropped(p, "Another bolus was given, choose again")
-        synchronized(lock) { sentId = id }
+        // Before the commit: the pump's bolus record is stamped when the pump gets the command, never earlier.
+        synchronized(lock) {
+            sentId = id
+            committed = Committed(id, now())
+        }
         val progress = try {
             runBlocking {
                 if (p.byWizard) wizardExecutor.commit(id, asAdvisor = false, Sources.Garmin, wizardLabel())
@@ -339,6 +352,23 @@ class GarminBolus(
             addProperty("bolusInsulin", it.insulin)
             deliveredUnits(it)?.let { u -> addProperty("bolusDelivered", u) }
         }
+        addCommittedBolus(this)
+    }
+
+    /**
+     * What the pump really gave for the last watch bolus. "OK" on commit only means queued: a pod that fails,
+     * or a stop from the phone, ends the bolus just the same, and the watch would show the full dose. The pump
+     * driver writes the bolus record when the pump gets the command and corrects its amount after a stop, a
+     * pod fault or a refusal (Omnipod DASH), so the first normal bolus since the commit is this one. No record
+     * means the command never reached the pump. [watchBolusId] lets the watch match it to its own commit.
+     */
+    private fun addCommittedBolus(jo: JsonObject) {
+        val c = synchronized(lock) { committed }?.takeIf { now() - it.atMs <= COMMITTED_SHOWN_MS } ?: return
+        val given = runBlocking { persistenceLayer.getBolusesFromTime(c.atMs, true) }
+            .firstOrNull { it.type == BS.Type.NORMAL && it.isValid }
+        jo.addProperty("watchBolusId", c.id.toString())
+        jo.addProperty("watchBolusRecorded", given != null)
+        given?.let { jo.addProperty("watchBolusU", Math.round(it.amount * 100.0) / 100.0) }
     }
 
     /**
