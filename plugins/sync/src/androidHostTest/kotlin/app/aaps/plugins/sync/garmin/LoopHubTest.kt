@@ -204,9 +204,9 @@ class LoopHubTest : TestBase() {
         iCfg = ICfg("label", 0, 0)
     )
 
-    private suspend fun stubPump(reservoir: Double, patch: Boolean) {
+    private suspend fun stubPump(reservoir: Double?, patch: Boolean) {
         val pump = mock<PumpWithConcentration>()
-        whenever(pump.reservoirLevel).thenReturn(MutableStateFlow(PumpInsulin(reservoir)))
+        whenever(pump.reservoirLevel).thenReturn(MutableStateFlow(reservoir?.let { PumpInsulin(it) }))
         whenever(pump.pumpDescription).thenReturn(PumpDescription().apply {
             isPatchPump = patch
             maxReservoirReading = 50
@@ -250,6 +250,16 @@ class LoopHubTest : TestBase() {
         assertNull(status.reservoir)
         assertEquals(0, status.reservoirLevel)
         assertNull(status.cannulaChange)
+        verify(profileFunction).getProfile()
+        verify(persistenceLayer).getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
+    }
+
+    @Test
+    fun testPumpStatus_ReservoirNotKnown() = runTest {
+        stubPump(reservoir = null, patch = false)
+        val status = loopHub.pumpStatus
+        assertNull(status.reservoir)
+        assertEquals(0, status.reservoirLevel)
         verify(profileFunction).getProfile()
         verify(persistenceLayer).getLastTherapyRecordUpToNow(TE.Type.CANNULA_CHANGE)
     }

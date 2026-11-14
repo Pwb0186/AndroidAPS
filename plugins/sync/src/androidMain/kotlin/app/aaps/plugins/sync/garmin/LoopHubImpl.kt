@@ -156,7 +156,8 @@ class LoopHubImpl(
         // Without a profile there is no concentration to convert with.
         val concentration = currentProfile?.iCfg?.concentration ?: return null
         val pump = activePlugin.activePump
-        val reservoir = pump.reservoirLevel.value.iU(concentration)
+        // null when the pump has not reported a reservoir yet; shown as unknown, as in the overview.
+        val reservoir = pump.reservoirLevel.value?.iU(concentration) ?: return null
         val description = pump.pumpDescription
         return when {
             // 0 is what pumps report before the first reading; AAPS shows it as unknown too.
