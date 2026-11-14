@@ -1,12 +1,14 @@
-# AAPS 4.0.0 with Garmin push, steps and watch commands
+# AAPS dev with Garmin push, steps and watch commands
 
 This is a fork of [AAPS](https://github.com/nightscout/AndroidAPS) with changes to the
-**Garmin plugin** only. Everything else is AAPS 4.0.0 (`master`), unchanged.
+**Garmin plugin** only. Everything else is AAPS `dev`, unchanged.
 
 > This is experimental. Do not use it to dose insulin unless you understand and accept the
 > risks. Use at your own risk.
 
-**Branch:** `GarminPush+Steps+Control-V4.0.0` (AAPS 4.0.0 + the Garmin changes).
+**Branch:** `GarminPush+Steps+Control-dev` (AAPS `dev` + the Garmin changes). `dev` moves all the time; this branch
+is moved onto a newer `dev` now and then.
+**Same changes on AAPS 4.0.0:** [`GarminPush+Steps+Control-V4.0.0`](https://github.com/Pwb0186/AndroidAPS/tree/GarminPush+Steps+Control-V4.0.0).
 **Watch face:** [aaps-garmin-push-watchface](https://github.com/Pwb0186/aaps-garmin-push-watchface)
 uses push, steps and the extra `/get` fields.
 **Watch app for the commands:** [AAPS Control widget](https://github.com/Pwb0186/aaps-garmin-control-widget),
@@ -30,7 +32,7 @@ Commands need a **remote control PIN**. Without it, every command is refused, an
 branch only adds push, steps and the extra watch face data.
 
 ## How to use it
-1. Build the APK from branch `GarminPush+Steps+Control-V4.0.0` the same way as AAPS
+1. Build the APK from branch `GarminPush+Steps+Control-dev` the same way as AAPS
    (see [Building the APK](https://wiki.aaps.app/en/latest/SettingUpAaps/BuildingAaps.html)).
 2. In AAPS, enable **Garmin** under Configuration → Communication. Its settings are under
    Garmin → Settings.
@@ -49,10 +51,11 @@ key is set, AAPS does not connect to Garmin Connect. This is the same as before.
 One change: `/carbs` and `/connect` now need the remote control PIN. `/carbs` also needs the
 "Allow carbs and bolus from Garmin watch" switch. So an old data field that sends carbs or
 a pump disconnect without them is refused.
-Wear OS, the loop, pumps and all other plugins are plain AAPS 4.0.0.
+Wear OS, the loop, pumps and all other plugins are plain AAPS `dev`.
 
 ## Tested
-- Used every day with an Omnipod DASH and a Forerunner 955 on AAPS 4.0.0.
+- Used every day with an Omnipod DASH and a Forerunner 955 on AAPS 4.0.0 (branch above); this `dev` branch has the
+  same Garmin code.
 - Host tests:
 ```
 ./gradlew :plugins:sync:testAndroidHostTest --tests "app.aaps.plugins.sync.garmin.*"
